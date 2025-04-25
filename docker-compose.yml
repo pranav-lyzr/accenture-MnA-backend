@@ -1,0 +1,14 @@
+version: "3.8"
+
+services:
+  fastapi_app:
+    build: .
+    ports:
+      - "8002:8002"
+    volumes:
+      - .:/app  # Mounts current directory to /app in the container
+    environment:
+      # No MongoDB-related environment variables needed
+      - PYTHONUNBUFFERED=1  # Ensures Python output is not buffered
+    stdin_open: true  # Keep the container's standard input open
+    tty: true  # Allocate a pseudo-TTY
