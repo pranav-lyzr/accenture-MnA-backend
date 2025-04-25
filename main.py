@@ -68,49 +68,51 @@ LYZR_AGENT_HEADERS = {
     "x-api-key": LYZR_API_KEY
 }
 
-# Function to sanitize JSON string
 def sanitize_json_string(json_str: str) -> str:
     """
-    Sanitizes a JSON string by fixing common issues like unterminated strings,
-    missing closing brackets, trailing commas, or non-JSON content.
+    Sanitizes a JSON string by removing code block wrappers, inline comments,
+    and extracting embedded JSON from narrative text. Returns valid JSON or error object.
     """
     if not json_str or json_str.isspace():
         logger.warning("Empty or whitespace JSON string received")
-        return "{}"  # Return empty JSON object for empty input
+        return "{}"
 
     # Remove non-printable characters and normalize whitespace
-    json_str = "".join(c for c in json_str if c.isprintable())
-    json_str = json_str.strip()
+    json_str = "".join(c for c in json_str if c.isprintable()).strip()
 
+    # Remove code block wrappers and inline comments
+    json_str = json_str.replace('```json', '').replace('```', '').replace('//', '')
+
+    # Try parsing the entire string
     try:
-        # Attempt to parse to validate JSON
         json.loads(json_str)
         return json_str
     except json.JSONDecodeError as e:
-        logger.warning(f"JSON parsing failed: {e}. Raw response: {json_str[:200]}... Attempting to sanitize.")
+        logger.warning(f"JSON parsing failed: {e}. Raw response (first 200 chars): {json_str[:200]}...")
 
-        # Fix unterminated strings (e.g., "4cassociates.com')
-        json_str = re.sub(r'("[^"]*?)(?<!\\)"?\s*([,\}\]])', r'\1"\2', json_str)
+        # Extract embedded JSON from narrative text
+        json_match = re.search(r'\{[\s\S]*\}', json_str)
+        if json_match:
+            json_str = json_match.group(0)
+            try:
+                json.loads(json_str)
+                logger.info("Extracted embedded JSON successfully.")
+                return json_str
+            except json.JSONDecodeError:
+                pass
 
-        # Remove trailing commas before closing brackets
-        json_str = re.sub(r',\s*([\]\}])', r'\1', json_str)
+        # Fix common JSON issues: trailing commas, missing commas
+        json_str = re.sub(r',\s*([\]\}])', r'\1', json_str)  # Remove trailing commas
+        json_str = re.sub(r'}(\s*[{[])', r'},\1', json_str)  # Add missing commas
 
-        # Ensure closing brackets for truncated arrays/objects
-        open_brackets = json_str.count('{') - json_str.count('}')
-        open_arrays = json_str.count('[') - json_str.count(']')
-        if open_brackets > 0:
-            json_str += '}' * open_brackets
-        if open_arrays > 0:
-            json_str += ']' * open_arrays
-
-        # If still invalid, attempt to wrap plain text or error messages
+        # Try parsing again
         try:
             json.loads(json_str)
             logger.info("Sanitization successful.")
             return json_str
         except json.JSONDecodeError:
-            logger.error(f"Sanitization failed. Wrapping as error message.")
-            return json.dumps({"error": "Invalid JSON response", "raw_content": json_str})
+            logger.error("Sanitization failed. Wrapping as error message.")
+            return json.dumps({"error": "Invalid JSON response", "raw_content": json_str})        
 
 # Retry decorator for API calls
 from functools import wraps
