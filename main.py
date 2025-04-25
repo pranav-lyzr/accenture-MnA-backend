@@ -817,3 +817,7 @@ async def enrich_company_endpoint(request: EnrichCompanyRequest) -> Dict:
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
     return result
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    return jsonify({"status": "ok"}), 200
