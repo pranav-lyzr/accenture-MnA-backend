@@ -28,3 +28,5 @@ merger_search_results.json
 
 .env
 __pycache__
+
+api_logs

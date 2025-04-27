@@ -68,51 +68,94 @@ LYZR_AGENT_HEADERS = {
     "x-api-key": LYZR_API_KEY
 }
 
-def sanitize_json_string(json_str: str) -> str:
+import ast
+
+def sanitize_json_string(json_str: any) -> str:
     """
-    Sanitizes a JSON string by removing code block wrappers, inline comments,
-    and extracting embedded JSON from narrative text. Returns valid JSON or error object.
+    Comprehensive JSON sanitization with multi-stage repair capabilities
+    Handles smart quotes, unescaped characters, and complex code blocks
     """
-    if not json_str or json_str.isspace():
-        logger.warning("Empty or whitespace JSON string received")
+    # Initial cleaning and conversion
+    json_str = str(json_str).strip()
+    if not json_str:
         return "{}"
 
-    # Remove non-printable characters and normalize whitespace
-    json_str = "".join(c for c in json_str if c.isprintable()).strip()
+    # Remove all ASCII control characters except newline/tab
+    json_str = re.sub(r'[\x00-\x09\x0b-\x1f\x7f]', '', json_str)
+    
+    # Handle mixed code block formats
+    json_str = re.sub(
+        r'(?:```(?:json)?|~~~)(.*?)(?:```|~~~)', 
+        lambda m: m.group(1).strip(), 
+        json_str, 
+        flags=re.DOTALL
+    )
 
-    # Remove code block wrappers and inline comments
-    json_str = json_str.replace('```json', '').replace('```', '').replace('//', '')
+    # Convert smart quotes and other Unicode characters
+    replacements = {
+        '“': '"', '”': '"', '‘': "'", '’': "'",
+        '\u2028': ' ', '\u2029': ' ', '\ufeff': ''
+    }
+    for bad, good in replacements.items():
+        json_str = json_str.replace(bad, good)
 
-    # Try parsing the entire string
+    # Fix multiline strings and unescaped quotes
+    json_str = re.sub(
+        r'"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'',  # Fixed single quote handling
+        lambda m: m.group(0).replace('\n', '\\n'),
+        json_str,
+        flags=re.DOTALL
+    )
+
+    # Stage 1: Attempt direct parse
     try:
         json.loads(json_str)
         return json_str
     except json.JSONDecodeError as e:
-        logger.warning(f"JSON parsing failed: {e}. Raw response (first 200 chars): {json_str[:200]}...")
+        error_pos = e.pos
+        logger.warning(f"Initial parse failed at {error_pos}: {e}")
 
-        # Extract embedded JSON from narrative text
-        json_match = re.search(r'\{[\s\S]*\}', json_str)
-        if json_match:
-            json_str = json_match.group(0)
-            try:
-                json.loads(json_str)
-                logger.info("Extracted embedded JSON successfully.")
-                return json_str
-            except json.JSONDecodeError:
-                pass
+    # Stage 2: Context-aware repair
+    try:
+        # Handle common unterminated strings
+        if "Unterminated string" in str(e):
+            quote_char = json_str[error_pos-1]
+            end_quote = json_str.find(quote_char, error_pos)
+            if end_quote == -1:
+                json_str += quote_char
+                
+        # Balance braces/brackets using stack logic
+        stack = []
+        for i, c in enumerate(json_str):
+            if c in '{[':
+                stack.append(c)
+            elif c in '}]':
+                if not stack:
+                    json_str = json_str[:i] + json_str[i+1:]
+                    continue
+                last = stack.pop()
+                if (c == '}' and last != '{') or (c == ']' and last != '['):
+                    json_str = json_str[:i] + json_str[i+1:]
+        
+        while stack:
+            json_str += '}' if stack.pop() == '{' else ']'
 
-        # Fix common JSON issues: trailing commas, missing commas
-        json_str = re.sub(r',\s*([\]\}])', r'\1', json_str)  # Remove trailing commas
-        json_str = re.sub(r'}(\s*[{[])', r'},\1', json_str)  # Add missing commas
+        # Final validation
+        return json.dumps(json.loads(json_str), indent=None)
+    except Exception:
+        pass
 
-        # Try parsing again
-        try:
-            json.loads(json_str)
-            logger.info("Sanitization successful.")
-            return json_str
-        except json.JSONDecodeError:
-            logger.error("Sanitization failed. Wrapping as error message.")
-            return json.dumps({"error": "Invalid JSON response", "raw_content": json_str})        
+    # Stage 3: Safe fallback using literal_eval
+    try:
+        parsed = ast.literal_eval(json_str)
+        return json.dumps(parsed)
+    except Exception as e:
+        logger.error(f"Literal eval fallback failed: {e}")
+
+    # Final fallback: Wrap in array if root object
+    if json_str.startswith('{'):
+        return f'[{json_str}]'
+    return json_str
 
 # Retry decorator for API calls
 from functools import wraps
@@ -145,149 +188,147 @@ def retry_api_call(max_attempts: int = 3, delay: float = 2.0):
 search_prompts = [
     {
         "title": "Initial Target Identification",
-        "content": """Identify 5-7 boutique retail consulting firms in North America as potential merger candidates:
+        "content": """Identify boutique retail consulting firms for merger potential with the following criteria:
 
-Criteria:
-- Annual revenue: $10-20M
-- Specialized expertise: Product development and sourcing strategy
-- Primary client base: Enterprise retailers (revenue >$500M)
+Target Firms:
 - Headquartered in North America
+- Annual revenue: Strictly $10-20M (exclude firms with revenue outside this range)
+- Specializations: Product Development, Sourcing Strategy, Supply Chain Optimization
+- Primary client base: Enterprise retailers (revenue >$500M)
 
 Research Methodology:
-- Cross-reference data from company websites, industry reports (e.g., IBISWorld, Consultancy.org), financial databases (e.g., PitchBook), and LinkedIn
-- Validate through public records, press releases, and client testimonials
-- Compare firms against reference models like 703 Advisors, Alix Partners, and OC&C for strategic fit
+- Identify 6 firms meeting all criteria
+- Cross-reference data from company websites, industry reports (e.g., Retail Dive, Consulting.us), financial databases (e.g., PitchBook), and LinkedIn
+- Validate through public records, client testimonials, and case studies
+- Exclude firms with incomplete data or revenue outside $10-20M
 
-Comprehensive Evaluation Dimensions:
-- Financial Performance: Revenue, growth rate (past 3-5 years), profitability (e.g., EBITDA margins), valuation multiples
-- Operational Scale: Employee count, office locations, global delivery capabilities
-- Client Portfolio: Key enterprise retail clients, average contract value, notable project outcomes
-- Leadership: Key executives, their industry experience, thought leadership
-- Specialization: Depth in product development and sourcing strategy
-- Merger Fit: Strategic synergies, cultural alignment, integration challenges
-- Technology: Tools and platforms used for client solutions
+Evaluation Criteria:
+- Financial Performance: Revenue, growth rate, profitability, valuation multiples
+- Operational Scale: Employee count, office locations
+- Client Portfolio: Key retail clients, average contract value
+- Leadership: Key executives, their expertise
+- Technology: Tools used (e.g., SAP, Tableau)
+- Merger Fit: Synergies, cultural alignment, integration challenges
 
 Output Requirements:
-- Provide a JSON object for each firm with the following structure:
+- Return a JSON array of 6 firms in the following structure:
   ```json
-  {
-    "name": "<string>",
-    "domain_name": "<string>",
-    "estimated_revenue": "<string, e.g., $15M>",
-    "revenue_growth": "<string, e.g., 10% CAGR over 3 years>",
-    "profitability": "<string, e.g., 20% EBITDA margin>",
-    "valuation_estimate": "<string, e.g., $30M based on 2x revenue multiple>",
-    "employee_count": "<string, e.g., 50-75 employees>",
-    "office_locations": ["<string>", ...],
-    "key_clients": ["<string>", ...],
-    "average_contract_value": "<string, e.g., $500K>",
-    "leadership": [
-      {
-        "name": "<string>",
-        "title": "<string>",
-        "experience": "<string, e.g., 15 years in retail consulting>"
-      },
-      ...
-    ],
-    "primary_domains": ["<string>", ...],
-    "proprietary_methodologies": "<string, e.g., Data-driven sourcing model>",
-    "technology_tools": ["<string>", ...],
-    "competitive_advantage": "<string>",
-    "merger_synergies": "<string>",
-    "cultural_alignment": "<string>",
-    "integration_challenges": "<string>",
-    "market_penetration": "<string, e.g., 5% of enterprise retail consulting market>",
-    "sources": ["<string>", ...]
-  }
+  [
+    {
+      "name": "<string>",
+      "domain_name": "<string>",
+      "estimated_revenue": "<string, e.g., $15M>",
+      "revenue_growth": "<string, e.g., 10% CAGR over 3 years>",
+      "profitability": "<string, e.g., 20% EBITDA margin>",
+      "valuation_estimate": "<string, e.g., $30M based on 2x revenue multiple>",
+      "employee_count": "<string, e.g., 50-75 employees>",
+      "office_locations": ["<string>", ],
+      "key_clients": ["<string>", ],
+      "average_contract_value": "<string, e.g., $500K>",
+      "leadership": [
+        {
+          "name": "<string>",
+          "title": "<string>",
+          "experience": "<string, e.g., 15 years in retail consulting>"
+        },
+        
+      ],
+      "primary_domains": ["<string>", ],
+      "proprietary_methodologies": "<string>",
+      "technology_tools": ["<string>", ],
+      "competitive_advantage": "<string>",
+      "merger_synergies": "<string>",
+      "cultural_alignment": "<string>",
+      "integration_challenges": "<string>",
+      "market_penetration": "<string, e.g., 5% of enterprise retail consulting market>",
+      "sources": ["<string>", ]
+    },
+  ]
   ```
-- Include 2-3 credible sources per firm (e.g., company website, LinkedIn, industry reports)
-- If data is unavailable, provide estimates with assumptions or mark as "Data not available"
-- Ensure results are concise, actionable, and suitable for executive evaluation of merger candidates.""",
+- Include 2-3 credible sources per firm
+- If data is unavailable, provide estimates with assumptions or mark as 'Data not available'
+- Return JSON only, with no narrative text, explanations, or inline comments (e.g., // )
+- Ensure all firms meet the $10-20M revenue criterion""",
         "sources": [
-            "https://www.703advisors.com/",
-            "https://www.alixpartners.com/",
-            "https://www.occstrategy.com/",
-            "https://www.consultancy.uk/consultancy-size/revenue",
-            "https://www.consultancy.org/consulting-industry/firm-size",
+            "https://www.consulting.us/rankings/top-consulting-firms-in-the-us-by-industry-expertise/retail",
+            "https://managementconsulted.com/boutique-consulting-firms-in-us/",
+            "https://www.g-co.agency/insights/best-retail-consulting-firms-to-work-with",
             "https://www.pitchbook.com/",
-            "https://www.linkedin.com/",
-            "https://www.ibisworld.com/"
+            "https://www.linkedin.com/"
         ]
     },
     {
         "title": "Market Analysis and Competitive Landscape",
-        "content": """Conduct a comprehensive competitive analysis of mid-tier retail strategy consulting firms to identify top merger candidates:
+        "content": """Analyze the competitive landscape of boutique retail consulting firms for merger potential:
 
-Criteria:
+Target Firms:
 - Headquartered in North America
-- Annual revenue: $10-20M
-- Core competencies: Product Development, Sourcing Strategy, Procurement Optimization
+- Annual revenue: Strictly $10-20M (exclude firms with revenue outside this range)
+- Specializations: Product Development, Sourcing Strategy, Procurement Optimization
 - Primary client base: Enterprise retailers (revenue >$500M)
 
 Research Methodology:
-- Analyze at least 10 firms
-- Cross-reference data from company websites, industry reports (e.g., IBISWorld, Gartner), financial databases (e.g., PitchBook), and LinkedIn
-- Validate through public records, press releases, and client testimonials
-- Exclude firms with incomplete or unverified data
+- Identify 5 firms meeting all criteria
+- Cross-reference data from industry reports (e.g., IBISWorld, Gartner), financial databases (e.g., PitchBook), company websites, and LinkedIn
+- Validate through client testimonials, press releases, and public records
+- Exclude firms with incomplete data or revenue outside $10-20M
 
-Comprehensive Evaluation Dimensions:
-- Financial Performance: Estimated annual revenue, revenue growth rate (past 3-5 years), profitability (e.g., EBITDA margins), valuation multiples
-- Operational Scale: Number of employees, office locations, global delivery capabilities
-- Client Portfolio: Key enterprise retail clients, average contract value, notable case studies
-- Leadership: Key executives, their industry experience, thought leadership
-- Specialization Depth: Expertise in product development, sourcing strategy, procurement optimization
-- Technology Integration: Use of tools/platforms (e.g., AI, analytics, supply chain software)
-- Merger Fit: Strategic synergies, cultural alignment, integration challenges
-- Innovation: Proprietary methodologies, patents, or unique processes
-- Market Positioning: Market penetration in enterprise retail consulting
+Evaluation Criteria:
+- Financial Performance: Revenue, growth rate, profitability, valuation multiples
+- Operational Scale: Employee count, office locations
+- Client Portfolio: Key retail clients, average contract value
+- Leadership: Key executives, their expertise
+- Technology: Tools used (e.g., AI analytics, supply chain software)
+- Competitive Positioning: Market share, competitive advantages
+- Merger Fit: Synergies, cultural alignment, integration challenges
 
 Output Requirements:
-- Provide a JSON object for each firm with the following structure:
+- Return a JSON object with 5 firms in the following structure:
   ```json
   {
-    "rank": <integer>,
-    "name": "<string>",
-    "domain_name": "<string>",
-    "estimated_revenue": "<string, e.g., $15M>",
-    "revenue_growth": "<string, e.g., 10% CAGR over 3 years>",
-    "profitability": "<string, e.g., 20% EBITDA margin>",
-    "valuation_estimate": "<string, e.g., $30M based on 2x revenue multiple>",
-    "employee_count": "<string, e.g., 50-75 employees>",
-    "office_locations": ["<string>", ...],
-    "key_clients": ["<string>", ...],
-    "average_contract_value": "<string, e.g., $500K>",
-    "leadership": [
+    "companies": [
       {
+        "rank": <integer>,
         "name": "<string>",
-        "title": "<string>",
-        "experience": "<string, e.g., 15 years in retail consulting>"
+        "domain_name": "<string>",
+        "estimated_revenue": "<string, e.g., $15M>",
+        "revenue_growth": "<string, e.g., 10% CAGR over 3 years>",
+        "profitability": "<string, e.g., 20% EBITDA margin>",
+        "valuation_estimate": "<string, e.g., $30M based on 2x revenue multiple>",
+        "employee_count": "<string, e.g., 50-75 employees>",
+        "office_locations": ["<string>", ],
+        "key_clients": ["<string>", ],
+        "average_contract_value": "<string, e.g., $500K>",
+        "leadership": [
+          {
+            "name": "<string>",
+            "title": "<string>",
+            "experience": "<string, e.g., 15 years in retail consulting>"
+          },
+        ],
+        "primary_domains": ["<string>", ],
+        "proprietary_methodologies": "<string>",
+        "technology_tools": ["<string>", ],
+        "competitive_advantage": "<string>",
+        "merger_synergies": "<string>",
+        "cultural_alignment": "<string>",
+        "integration_challenges": "<string>",
+        "market_penetration": "<string, e.g., 5% of enterprise retail consulting market>",
+        "sources": ["<string>", ]
       },
-      ...
-    ],
-    "primary_domains": ["<string>", ...],
-    "proprietary_methodologies": "<string, e.g., Analytics-driven sourcing framework>",
-    "technology_tools": ["<string>", ...],
-    "competitive_advantage": "<string>",
-    "merger_synergies": "<string>",
-    "cultural_alignment": "<string>",
-    "integration_challenges": "<string>",
-    "market_penetration": "<string, e.g., 5% of enterprise retail consulting market>",
-    "sources": ["<string>", ...]
+    ]
   }
   ```
-- Rank firms from 1 to 10 based on merger potential (financial stability, strategic fit, market positioning)
 - Include 2-3 credible sources per firm
-- If data is unavailable, provide estimates with assumptions or mark as "Data not available"
-- Ensure results are concise and suitable for executive merger evaluations.""",
+- If data is unavailable, provide estimates with assumptions or mark as 'Data not available'
+- Return JSON only, with no narrative text, explanations, or inline comments (e.g., // )
+- Ensure all firms meet the $10-20M revenue criterion""",
         "sources": [
-            "https://www.consultancy.org/consulting-industry/market-analysis",
-            "https://www.ibisworld.com/industry-trends/market-research-reports/",
-            "https://www.gartner.com/en/consulting/insights/market-insights",
-            "https://www.forrester.com/bold",
-            "https://www.mckinsey.com/industries/retail/our-insights",
+            "https://www.ibisworld.com/",
+            "https://www.gartner.com/",
             "https://www.pitchbook.com/",
             "https://www.linkedin.com/",
-            "https://www.bloomberg.com/markets"
+            "https://www.retaildive.com/"
         ]
     },
     {
@@ -296,64 +337,66 @@ Output Requirements:
 
 Target Firms:
 - Headquartered in North America
-- Annual revenue: $10-20M
+- Annual revenue: Strictly $10-20M (exclude firms with revenue outside this range, e.g., Accenture, Deloitte)
 - Specializations: Strategic Sourcing, Global Procurement, Retail Supply Chain Optimization
 - Primary client base: Enterprise retailers (revenue >$500M)
 
 Research Methodology:
-- Analyze at least 7 firms
+- Identify exactly 7 firms meeting all criteria
 - Cross-reference data from company websites, industry reports (e.g., Procurement Leaders, CIPS), financial databases (e.g., PitchBook), and LinkedIn
 - Validate through public records, client testimonials, and case studies
-- Exclude firms with incomplete or unverified data
+- Exclude firms with incomplete data or revenue outside $10-20M
 
 Evaluation Criteria:
 - Financial Performance: Revenue, growth rate, profitability, valuation multiples
 - Operational Scale: Employee count, office locations, global sourcing reach
-- Client Portfolio: Key retail clients, average contract value, notable sourcing projects
-- Leadership: Key executives, their procurement expertise, thought leadership
-- Sourcing Complexity: Handling of regional vs. global sourcing challenges
+- Client Portfolio: Key retail clients, average contract value
+- Leadership: Key executives, their procurement expertise
 - Technology: Tools for procurement optimization (e.g., SAP Ariba, Coupa)
 - Merger Fit: Synergies, cultural alignment, integration challenges
-- Emerging Markets: Expertise in sourcing from emerging markets
 
 Output Requirements:
-- Provide a JSON object for each firm with the following structure:
+- Return a JSON object with exactly 7 firms in the following structure:
   ```json
   {
-    "name": "<string>",
-    "domain_name": "<string>",
-    "estimated_revenue": "<string, e.g., $15M>",
-    "revenue_growth": "<string, e.g., 10% CAGR over 3 years>",
-    "profitability": "<string, e.g., 20% EBITDA margin>",
-    "valuation_estimate": "<string, e.g., $30M based on 2x revenue multiple>",
-    "employee_count": "<string, e.g., 50-75 employees>",
-    "office_locations": ["<string>", ...],
-    "key_clients": ["<string>", ...],
-    "average_contract_value": "<string, e.g., $500K>",
-    "leadership": [
+    "companies": [
       {
         "name": "<string>",
-        "title": "<string>",
-        "experience": "<string, e.g., 15 years in procurement>"
+        "domain_name": "<string>",
+        "estimated_revenue": "<string, e.g., $15M>",
+        "revenue_growth": "<string, e.g., 10% CAGR over 3 years>",
+        "profitability": "<string, e.g., 20% EBITDA margin>",
+        "valuation_estimate": "<string, e.g., $30M based on 2x revenue multiple>",
+        "employee_count": "<string, e.g., 50-75 employees>",
+        "office_locations": ["<string>", ],
+        "key_clients": ["<string>", ],
+        "average_contract_value": "<string, e.g., $500K>",
+        "leadership": [
+          {
+            "name": "<string>",
+            "title": "<string>",
+            "experience": "<string, e.g., 15 years in procurement>"
+          },
+        ],
+        "primary_domains": ["<string>", ],
+        "proprietary_methodologies": "<string>",
+        "technology_tools": ["<string>", ],
+        "competitive_advantage": "<string>",
+        "merger_synergies": "<string>",
+        "cultural_alignment": "<string>",
+        "integration_challenges": "<string>",
+        "market_penetration": "<string, e.g., 5% of enterprise retail consulting market>",
+        "technological_enablement_score": "<string, e.g., High, based on AI adoption>",
+        "global_sourcing_reach": "<string, e.g., Strong in Asia>",
+        "sources": ["<string>", ]
       },
-      ...
-    ],
-    "primary_domains": ["<string>", ...],
-    "proprietary_methodologies": "<string, e.g., Predictive sourcing analytics>",
-    "technology_tools": ["<string>", ...],
-    "competitive_advantage": "<string>",
-    "merger_synergies": "<string>",
-    "cultural_alignment": "<string>",
-    "integration_challenges": "<string>",
-    "market_penetration": "<string, e.g., 5% of enterprise retail consulting market>",
-    "technological_enablement_score": "<string, e.g., High, based on AI adoption>",
-    "global_sourcing_reach": "<string, e.g., Strong in Asia and LATAM>",
-    "sources": ["<string>", ...]
+    ]
   }
   ```
 - Include 2-3 credible sources per firm
-- If data is unavailable, provide estimates with assumptions or mark as "Data not available"
-- Ensure results are actionable for executive merger evaluations.""",
+- If data is unavailable, provide estimates with assumptions or mark as 'Data not available'
+- Return JSON only, with no narrative text, explanations, or inline comments (e.g., // )
+- Ensure all firms meet the $10-20M revenue criterion""",
         "sources": [
             "https://www.supplychaindigital.com/technology/top-10-procurement-consulting-firms",
             "https://www.consultancy.uk/sectors/procurement-consulting",
@@ -366,150 +409,148 @@ Output Requirements:
     },
     {
         "title": "Product Development Expertise",
-        "content": """Map the retail product development consulting ecosystem to identify merger candidates:
+        "content": """Identify boutique retail consulting firms with expertise in product development for merger potential:
 
-Firm Selection Criteria:
+Target Firms:
 - Headquartered in North America
-- Annual revenue: $10-20M
-- Expertise in: Concept Development, Product Optimization, Launch Strategy, Post-Launch Performance Analysis
+- Annual revenue: Strictly $10-20M (exclude firms with revenue outside this range)
+- Specializations: Concept Development, Product Optimization, Launch Strategy, Post-Launch Performance Analysis
 - Primary client base: Enterprise retailers (revenue >$500M)
 
 Research Methodology:
-- Analyze at least 7 firms
-- Cross-reference data from company websites, industry reports (e.g., PDMA, Retail Dive), financial databases (e.g., PitchBook), and LinkedIn
-- Validate through case studies, client testimonials, and public records
-- Exclude firms with incomplete or unverified data
+- Identify 4 firms meeting all criteria
+- Cross-reference data from company websites, industry reports (e.g., Retail Dive, PDMA), financial databases (e.g., PitchBook), and LinkedIn
+- Validate through public records, client testimonials, and case studies
+- Exclude firms with incomplete data or revenue outside $10-20M
 
-Comprehensive Assessment Dimensions:
+Evaluation Criteria:
 - Financial Performance: Revenue, growth rate, profitability, valuation multiples
-- Operational Scale: Employee count, office locations, global capabilities
-- Client Portfolio: Key retail clients, average contract value, representative case studies
-- Leadership: Key executives, their product development expertise, thought leadership
-- Innovation: Success rate, time-to-market acceleration, cross-category capabilities
-- Technology: Tools for product development (e.g., PLM software, analytics)
+- Operational Scale: Employee count, office locations
+- Client Portfolio: Key retail clients, average contract value
+- Leadership: Key executives, their product development expertise
+- Technology: Tools used (e.g., PLM software, Tableau)
 - Merger Fit: Synergies, cultural alignment, integration challenges
-- Retail Specialization: Depth in retail verticals (e.g., apparel, electronics)
 
 Output Requirements:
-- Provide a JSON object for each firm with the following structure:
+- Return a JSON array of 4 firms in the following structure:
   ```json
-  {
-    "name": "<string>",
-    "domain_name": "<string>",
-    "estimated_revenue": "<string, e.g., $15M>",
-    "revenue_growth": "<string, e.g., 10% CAGR over 3 years>",
-    "profitability": "<string, e.g., 20% EBITDA margin>",
-    "valuation_estimate": "<string, e.g., $30M based on 2x revenue multiple>",
-    "employee_count": "<string, e.g., 50-75 employees>",
-    "office_locations": ["<string>", ...],
-    "key_clients": ["<string>", ...],
-    "average_contract_value": "<string, e.g., $500K>",
-    "leadership": [
-      {
-        "name": "<string>",
-        "title": "<string>",
-        "experience": "<string, e.g., 15 years in product development>"
-      },
-      ...
-    ],
-    "primary_domains": ["<string>", ...],
-    "proprietary_methodologies": "<string, e.g., Agile product optimization>",
-    "technology_tools": ["<string>", ...],
-    "competitive_advantage": "<string>",
-    "merger_synergies": "<string>",
-    "cultural_alignment": "<string>",
-    "integration_challenges": "<string>",
-    "market_penetration": "<string, e.g., 5% of enterprise retail consulting market>",
-    "innovation_metrics": "<string, e.g., 80% success rate in product launches>",
-    "case_studies": ["<string>", ...],
-    "sources": ["<string>", ...]
-  }
+  [
+    {
+      "name": "<string>",
+      "domain_name": "<string>",
+      "estimated_revenue": "<string, e.g., $15M>",
+      "revenue_growth": "<string, e.g., 10% CAGR over 3 years>",
+      "profitability": "<string, e.g., 20% EBITDA margin>",
+      "valuation_estimate": "<string, e.g., $30M based on 2x revenue multiple>",
+      "employee_count": "<string, e.g., 50-75 employees>",
+      "office_locations": ["<string>", ],
+      "key_clients": ["<string>", ],
+      "average_contract_value": "<string, e.g., $500K>",
+      "leadership": [
+        {
+          "name": "<string>",
+          "title": "<string>",
+          "experience": "<string, e.g., 15 years in product development>"
+        },
+      ],
+      "primary_domains": ["<string>", ],
+      "proprietary_methodologies": "<string>",
+      "technology_tools": ["<string>", ],
+      "competitive_advantage": "<string>",
+      "merger_synergies": "<string>",
+      "cultural_alignment": "<string>",
+      "integration_challenges": "<string>",
+      "market_penetration": "<string, e.g., 5% of enterprise retail consulting market>",
+      "innovation_metrics": "<string, e.g., 80% launch success rate>",
+      "sources": ["<string>", ]
+    },
+    
+  ]
   ```
 - Include 2-3 credible sources per firm
-- If data is unavailable, provide estimates with assumptions or mark as "Data not available"
-- Ensure results are actionable for executive merger evaluations.""",
+- If data is unavailable, provide estimates with assumptions or mark as 'Data not available'
+- Return JSON only, with no narrative text, explanations, or inline comments (e.g., // )
+- Ensure all firms meet the $10-20M revenue criterion""",
         "sources": [
-            "https://www.pdma.org/page/ResearchReports",
-            "https://www.innovationmanagement.se/",
-            "https://www.fastcompany.com/innovation-insights",
-            "https://www.retaildive.com/news/product-development/",
-            "https://www.productstrategygroup.com/resources",
+            "https://www.retaildive.com/",
+            "https://www.pdma.org/",
             "https://www.pitchbook.com/",
-            "https://www.linkedin.com/"
+            "https://www.linkedin.com/",
+            "https://www.g-co.agency/insights/best-retail-consulting-firms-to-work-with"
         ]
     },
     {
         "title": "Supply Chain Specialists",
-        "content": """Map the supply chain consulting ecosystem to identify strategic optimization specialists for merger potential:
+        "content": """Identify boutique retail consulting firms with expertise in supply chain optimization for merger potential:
 
-Firm Selection Parameters:
+Target Firms:
 - Headquartered in North America
-- Annual revenue: $10-20M
-- Core Competencies: Supply Chain Optimization, Vendor Assessment/Evaluation, Digital Supply Chain Transformation
+- Annual revenue: Strictly $10-20M (exclude firms with revenue outside this range)
+- Specializations: Supply Chain Optimization, Vendor Assessment/Evaluation, Digital Supply Chain Transformation
 - Primary client base: Enterprise retailers (revenue >$500M)
 
 Research Methodology:
-- Analyze at least 7 firms
+- Identify 4 firms meeting all criteria
 - Cross-reference data from company websites, industry reports (e.g., Gartner, Supply Chain Dive), financial databases (e.g., PitchBook), and LinkedIn
-- Validate through case studies, client testimonials, and public records
-- Exclude firms with incomplete or unverified data
+- Validate through public records, client testimonials, and case studies
+- Exclude firms with incomplete data or revenue outside $10-20M
 
-Comprehensive Evaluation Framework:
+Evaluation Criteria:
 - Financial Performance: Revenue, growth rate, profitability, valuation multiples
-- Operational Scale: Employee count, office locations, global capabilities
-- Client Portfolio: Key retail clients, average contract value, notable projects
-- Leadership: Key executives, their supply chain expertise, thought leadership
-- Supply Chain Complexity: Handling of complex supply chains (e.g., multi-region)
-- Technology: Tools for supply chain optimization (e.g., Blue Yonder, Kinaxis)
+- Operational Scale: Employee count, office locations
+- Client Portfolio: Key retail clients, average contract value
+- Leadership: Key executives, their supply chain expertise
+- Technology: Tools used (e.g., Blue Yonder, Kinaxis)
 - Merger Fit: Synergies, cultural alignment, integration challenges
-- Sustainability: Integration of sustainable practices in supply chain solutions
 
 Output Requirements:
-- Provide a JSON object for each firm with the following structure:
+- Return a JSON object with 4 firms in the following structure:
   ```json
   {
-    "name": "<string>",
-    "domain_name": "<string>",
-    "estimated_revenue": "<string, e.g., $15M>",
-    "revenue_growth": "<string, e.g., 10% CAGR over 3 years>",
-    "profitability": "<string, e.g., 20% EBITDA margin>",
-    "valuation_estimate": "<string, e.g., $30M based on 2x revenue multiple>",
-    "employee_count": "<string, e.g., 50-75 employees>",
-    "office_locations": ["<string>", ...],
-    "key_clients": ["<string>", ...],
-    "average_contract_value": "<string, e.g., $500K>",
-    "leadership": [
+    "companies": [
       {
         "name": "<string>",
-        "title": "<string>",
-        "experience": "<string, e.g., 15 years in supply chain>"
+        "domain_name": "<string>",
+        "estimated_revenue": "<string, e.g., $15M>",
+        "revenue_growth": "<string, e.g., 10% CAGR over 3 years>",
+        "profitability": "<string, e.g., 20% EBITDA margin>",
+        "valuation_estimate": "<string, e.g., $30M based on 2x revenue multiple>",
+        "employee_count": "<string, e.g., 50-75 employees>",
+        "office_locations": ["<string>", ],
+        "key_clients": ["<string>", ],
+        "average_contract_value": "<string, e.g., $500K>",
+        "leadership": [
+          {
+            "name": "<string>",
+            "title": "<string>",
+            "experience": "<string, e.g., 15 years in supply chain>"
+          },
+        ],
+        "primary_domains": ["<string>", ],
+        "proprietary_methodologies": "<string>",
+        "technology_tools": ["<string>", ],
+        "competitive_advantage": "<string>",
+        "merger_synergies": "<string>",
+        "cultural_alignment": "<string>",
+        "integration_challenges": "<string>",
+        "market_penetration": "<string, e.g., 5% of enterprise retail consulting market>",
+        "digital_transformation_score": "<string, e.g., High, based on AI adoption>",
+        "sustainability_performance": "<string, e.g., 30% reduction in carbon footprint>",
+        "sources": ["<string>", ]
       },
-      ...
-    ],
-    "primary_domains": ["<string>", ...],
-    "proprietary_methodologies": "<string, e.g., Digital supply chain framework>",
-    "technology_tools": ["<string>", ...],
-    "competitive_advantage": "<string>",
-    "merger_synergies": "<string>",
-    "cultural_alignment": "<string>",
-    "integration_challenges": "<string>",
-    "market_penetration": "<string, e.g., 5% of enterprise retail consulting market>",
-    "digital_transformation_score": "<string, e.g., High, based on AI adoption>",
-    "sustainability_performance": "<string, e.g., 30% reduction in carbon footprint>",
-    "sources": ["<string>", ...]
+    ]
   }
   ```
 - Include 2-3 credible sources per firm
-- If data is unavailable, provide estimates with assumptions or mark as "Data not available"
-- Ensure results are actionable for executive merger evaluations.""",
+- If data is unavailable, provide estimates with assumptions or mark as 'Data not available'
+- Return JSON only, with no narrative text, explanations, or inline comments (e.g., // )
+- Ensure all firms meet the $10-20M revenue criterion""",
         "sources": [
-            "https://www.supplychaindigital.com/technology/top-supply-chain-consulting-firms",
-            "https://www.gartner.com/en/supply-chain/insights",
+            "https://www.gartner.com/",
             "https://www.supplychaindive.com/",
-            "https://www.mckinsey.com/capabilities/operations/our-insights/supply-chain-insights",
-            "https://www.consultancy.uk/sectors/supply-chain-consulting",
             "https://www.pitchbook.com/",
-            "https://www.linkedin.com/"
+            "https://www.linkedin.com/",
+            "https://www.walmartlogisticsreport.com/"
         ]
     }
 ]
@@ -583,7 +624,7 @@ async def query_lyzr_agent(agent_id: str, session_id: str, prompt: str) -> Optio
         response.raise_for_status()
         json_response = response.json()
         raw_response = json_response.get("response", "{}")
-        logger.info(f"Raw API response (first 200 chars): {raw_response}...")
+        print(f"Raw API response (first 200 chars): {raw_response}")
         logger.info(f"API response size: {len(str(json_response))} bytes")
         json_response["response"] = sanitize_json_string(raw_response)
         return json_response
@@ -597,82 +638,109 @@ async def query_perplexity(prompt: str) -> Optional[Dict]:
 async def query_claude(prompt: str) -> Optional[Dict]:
     return await query_lyzr_agent(LYZR_CLAUDE_AGENT_ID, LYZR_CLAUDE_SESSION_ID, prompt)
 
-def extract_companies(json_response: Dict) -> List[str]:
+def extract_companies(json_content: any) -> List[str]:
+    """Deep search for company data in complex JSON structures"""
+    companies = []
+    
+    def recursive_search(node):
+        nonlocal companies
+        if isinstance(node, dict):
+            if 'name' in node and 'domain_name' in node:
+                companies.append(node['name'])
+                return True
+            for k, v in node.items():
+                if recursive_search(v):
+                    return True
+        elif isinstance(node, list):
+            for item in node:
+                recursive_search(item)
+        return False
+
     try:
-        companies = json_response.get("companies", [])
-        return [company.get("name", "") for company in companies if company.get("name")]
-    except (AttributeError, TypeError) as e:
-        logger.warning(f"Invalid JSON structure for companies extraction: {e}")
+        # First check standard structures
+        if isinstance(json_content, list):
+            companies = [item.get('name', '') for item in json_content if isinstance(item, dict)]
+            return list(filter(None, companies))
+        
+        if isinstance(json_content, dict):
+            if 'companies' in json_content:
+                return extract_companies(json_content['companies'])
+            
+            # Deep search for company-like structures
+            if recursive_search(json_content):
+                return list(filter(None, companies))
+            
+        # Fallback to key pattern matching
+        companies = re.findall(
+            r'"name"\s*:\s*"([^"]+)"', 
+            json.dumps(json_content), 
+            re.IGNORECASE
+        )
+        return list(set(filter(lambda x: 'example' not in x.lower(), companies)))
+    
+    except Exception as e:
+        logger.error(f"Deep extraction failed: {e}")
         return []
 
 async def analyze_with_claude(companies: List[str], raw_responses: Dict[str, str]) -> Optional[Dict]:
     full_context = "\n\n".join([f"### {title}\n{content}" for title, content in raw_responses.items()])
     company_list = "\n".join([f"- {company}" for company in companies])
-    analysis_prompt = """Analyze potential merger candidates for a retail consulting company in the USA with the following criteria:
-- Size: ~$15M in sales
-- Industry: Retail consulting
-- Client Type: Large enterprise retailers (>$500M revenue)
-- Key Services: Product development and sourcing strategy
+    analysis_prompt = """Analyze the provided list of boutique retail consulting firms for merger potential based on the following criteria weightings:
+- Financial Health (30%): Revenue, growth rate, profitability, valuation multiples
+- Strategic Fit (30%): Service overlap, client base compatibility, market positioning
+- Operational Compatibility (20%): Geographic presence, employee count, technology stack
+- Leadership and Innovation (10%): Leadership expertise, proprietary methodologies, innovation metrics
+- Cultural and Integration Risks (10%): Cultural alignment, integration challenges
 
-Based on my research, I've identified the following companies:
+Input Data:
+- Companies: {company_list}
+- Detailed Data: {full_context}
 
-{company_list}
-
-Here is the detailed information I've collected about these companies:
-
-{full_context}
-
-Please provide a comprehensive analysis of these companies as potential merger candidates, tailored for presentation to senior executives. Use the provided data fields (e.g., estimated_revenue, revenue_growth, profitability, employee_count, key_clients, leadership, proprietary_methodologies, technology_tools, merger_synergies, cultural_alignment, integration_challenges) to inform your analysis.
-
-Evaluation Framework:
-1. Financial Health (30%): Assess estimated_revenue, revenue_growth, profitability, and valuation_estimate. Prioritize firms with stable growth (e.g., >8% CAGR) and strong margins (e.g., >15% EBITDA).
-2. Strategic Fit (30%): Evaluate alignment in primary_domains, key_clients, and proprietary_methodologies with the acquiring firm's focus on product development and sourcing strategy.
-3. Operational Compatibility (20%): Consider employee_count, office_locations, and global capabilities to ensure scalable integration.
-4. Leadership and Innovation (10%): Analyze leadership expertise and technology_tools to assess long-term value creation.
-5. Cultural and Integration Risks (10%): Review cultural_alignment and integration_challenges to minimize post-merger friction.
-
-Analysis Requirements:
-1. Rank the top 5 most promising merger candidates based on the evaluation framework. Provide a clear explanation for each ranking, referencing specific data fields.
-2. For each top candidate, provide:
-   - Estimated Valuation: Calculate using provided estimated_revenue and profitability, applying industry-standard multiples (e.g., 1.5-3x revenue or 8-12x EBITDA for boutique retail consulting). Validate against valuation_estimate if provided.
-   - Strategic Fit Assessment: Detail complementarity in services (e.g., product development vs. sourcing), client base overlap, and market expansion potential.
-   - Potential Synergies: Identify specific benefits (e.g., cross-selling to key_clients, combining proprietary_methodologies, leveraging technology_tools).
-   - Integration Challenges: Highlight risks (e.g., cultural misalignment, service overlap, geographic constraints) and mitigation strategies.
-   - References: Cite specific sources from the input data (e.g., company website, LinkedIn, industry reports) and additional credible sources if needed.
-3. Recommend the single best merger candidate with a detailed justification, summarizing why it excels in financial health, strategic fit, and operational compatibility, and how it minimizes integration risks.
+Analysis Methodology:
+1. Financial Health: Calculate weighted scores based on revenue CAGR, EBITDA margins, and valuation multiples
+2. Strategic Fit: Evaluate service complementarity, client overlap, and market penetration
+3. Operational Compatibility: Assess office locations, employee scale, and technology alignment
+4. Leadership and Innovation: Review leadership experience, proprietary methodologies, and innovation metrics
+5. Cultural and Integration Risks: Analyze cultural alignment and potential integration challenges
 
 Output Requirements:
-- Provide a JSON object with the following structure:
+- Return a JSON object with the following structure:
   ```json
   {
     "analysis": {
-      "top_candidates": [
+      "rankings": [
         {
-          "rank": <integer>,
           "name": "<string>",
-          "domain_name": "<string>",
-          "reason": "<string, e.g., Strong financials and complementary services>",
-          "valuation": "<string, e.g., $30M based on 2x revenue>",
-          "strategic_fit": "<string, e.g., Aligns with sourcing strategy>",
-          "synergies": "<string, e.g., Cross-selling to shared clients>",
-          "challenges": "<string, e.g., Cultural integration risks>",
-          "references": ["<string, e.g., https://company.com>", ...]
+          "overall_score": <float, 0-100>,
+          "financial_health_score": <float, 0-100>,
+          "strategic_fit_score": <float, 0-100>,
+          "operational_compatibility_score": <float, 0-100>,
+          "leadership_innovation_score": <float, 0-100>,
+          "cultural_integration_score": <float, 0-100>,
+          "rationale": "<string, brief explanation of ranking>"
         },
-        ...
+
       ],
-      "recommended_candidate": {
-        "name": "<string>",
-        "justification": "<string, e.g., Best balance of financial stability and strategic fit>"
-      }
+      "recommendations": [
+        {
+          "name": "<string>",
+          "merger_potential": "<string, e.g., High/Medium/Low>",
+          "key_synergies": ["<string>", ],
+          "potential_risks": ["<string>", ]
+        },
+
+      ],
+      "summary": "<string, 2-3 sentences summarizing the analysis>"
     }
   }
   ```
-- Ensure the analysis is concise, data-driven, and suitable for a boardroom presentation.
-- Use provided data fields explicitly (e.g., 'Based on {company.estimated_revenue} and {company.revenue_growth}...').
-- If data is missing, make reasonable assumptions based on industry norms (e.g., 15-20% EBITDA margins for boutique firms) and note them.
-- Cross-reference sources from {full_context} and add external sources (e.g., Consultancy.org, PitchBook) for validation where applicable.
+- Rank all provided firms based on weighted scores
+- Provide actionable recommendations for each firm
+- Include a concise summary of findings
+- Return JSON only, with no narrative text, explanations, or inline comments (e.g., // )
+- If data is missing, use reasonable estimates and note assumptions in the rationale"""
 
-Ensure the analysis reflects deep industry knowledge, strategic foresight, and practical merger considerations to impress a seasoned retail consulting executive."""
+
     response = await query_claude(analysis_prompt)
     if response:
         try:
@@ -688,30 +756,88 @@ Ensure the analysis reflects deep industry knowledge, strategic foresight, and p
 async def list_prompts() -> List[Dict]:
     return [{"index": i, "title": p["title"]} for i, p in enumerate(search_prompts)]
 
-@app.post("/run_prompt", summary="Run a Single Search Prompt", description="Executes a single search prompt using the Lyzr agent API for Perplexity, expecting JSON output, and returns the response as a JSON object and extracted companies.")
+@app.post("/run_prompt")
 async def run_prompt(request: PromptRequest) -> Dict:
-    if request.prompt_index >= len(search_prompts):
+    try:
+        prompt_data = search_prompts[request.prompt_index]
+    except IndexError:
         raise HTTPException(status_code=400, detail="Invalid prompt index")
     
-    prompt_data = search_prompts[request.prompt_index]
     response = await query_perplexity(prompt_data['content'])
     if not response:
-        raise HTTPException(status_code=500, detail="Lyzr agent API request failed")
-    
-    try:
-        json_content = json.loads(sanitize_json_string(response.get('response', '{}')))
-        companies = extract_companies(json_content)
-    except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse response as JSON: {e}")
-        json_content = {"error": "Invalid JSON response", "raw_content": response.get('response', '')}
-        companies = []
+        raise HTTPException(status_code=500, detail="API request failed")
 
+    processed = process_api_response(response, prompt_data)
+    return processed
+
+def process_api_response(response: Dict, prompt_data: Dict) -> Dict:
+    """Unified response processing with forensic logging"""
+    raw_content = response.get('response', '')
+    
+    # Forensic logging
+    logger.debug(f"Raw API response:\n{raw_content[:2000]}")
+    Path("api_logs").mkdir(exist_ok=True)
+    with open(f"api_logs/{time.time()}.json", "w") as f:
+        f.write(raw_content)
+    
+    # Multi-stage processing
+    sanitized = sanitize_json_string(raw_content)
+    try:
+        json_content = json.loads(sanitized)
+    except json.JSONDecodeError as e:
+        logger.error(f"Critical JSON failure: {e}")
+        return {
+            "error": "Invalid JSON structure",
+            "diagnosis": diagnose_json_issues(sanitized),
+            "raw_sample": raw_content[:500]
+        }
+    
+    companies = extract_companies(json_content)
     return {
         "title": prompt_data["title"],
-        "raw_response": json_content,
-        "extracted_companies": companies,
+        "response": json_content,
+        "companies": companies,
         "sources": prompt_data["sources"]
     }
+
+def diagnose_json_issues(json_str: str) -> Dict:
+    """Detailed JSON diagnostics"""
+    diagnosis = {"unclosed_constructs": [], "string_issues": []}
+    
+    # Track brackets/braces
+    stack = []
+    for i, c in enumerate(json_str):
+        if c in '{[':
+            stack.append((c, i))
+        elif c in '}]':
+            if not stack:
+                diagnosis["unclosed_constructs"].append(f"Extra {c} at {i}")
+                continue
+            last = stack.pop()
+            if (c == '}' and last[0] != '{') or (c == ']' and last[0] != '['):
+                diagnosis["unclosed_constructs"].append(
+                    f"Mismatch: {last[0]} at {last[1]} vs {c} at {i}"
+                )
+    
+    # Find unterminated strings
+    in_string = False
+    escape = False
+    start_pos = 0
+    for i, c in enumerate(json_str):
+        if c == '"' and not escape:
+            if not in_string:
+                start_pos = i
+                in_string = True
+            else:
+                in_string = False
+        escape = (c == '\\' and not escape)
+    
+    if in_string:
+        diagnosis["string_issues"].append(
+            f"Unterminated string starting at {start_pos}: {json_str[start_pos:start_pos+50]}"
+        )
+    
+    return diagnosis
 
 @app.post("/extract_companies", summary="Extract Companies from Response", description="Extracts company names from a given JSON response content.")
 async def extract_companies_endpoint(content: str) -> CompaniesResponse:
