@@ -286,7 +286,7 @@ Output Requirements:
 - Return a JSON object with 5 firms in the following structure:
   ```json
   {
-    "companies": [
+    [
       {
         "rank": <integer>,
         "name": "<string>",
@@ -359,7 +359,7 @@ Output Requirements:
 - Return a JSON object with exactly 7 firms in the following structure:
   ```json
   {
-    "companies": [
+    [
       {
         "name": "<string>",
         "domain_name": "<string>",
@@ -507,7 +507,7 @@ Output Requirements:
 - Return a JSON object with 4 firms in the following structure:
   ```json
   {
-    "companies": [
+    [
       {
         "name": "<string>",
         "domain_name": "<string>",
