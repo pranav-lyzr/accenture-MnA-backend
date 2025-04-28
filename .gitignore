@@ -30,3 +30,4 @@ merger_search_results.json
 __pycache__
 
 api_logs
+apollo_logs

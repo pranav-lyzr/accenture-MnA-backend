@@ -184,7 +184,7 @@ def retry_api_call(max_attempts: int = 3, delay: float = 2.0):
         return wrapper
     return decorator
 
-# Search prompts (unchanged, as provided by user)
+# Search prompts with stricter validation
 search_prompts = [
     {
         "title": "Initial Target Identification",
@@ -199,7 +199,7 @@ Target Firms:
 Research Methodology:
 - Identify 6 firms meeting all criteria
 - Cross-reference data from company websites, industry reports (e.g., Retail Dive, Consulting.us), financial databases (e.g., PitchBook), and LinkedIn
-- Validate through public records, client testimonials, and case studies
+- Validate through public records, client testimonials, and case studies; data must be confirmed by at least two credible sources listed below
 - Exclude firms with incomplete data or revenue outside $10-20M
 
 Evaluation Criteria:
@@ -246,7 +246,7 @@ Output Requirements:
   ]
   ```
 - Include 2-3 credible sources per firm
-- If data is unavailable, provide estimates with assumptions or mark as 'Data not available'
+- If data is unavailable or cannot be validated by at least two sources, mark as 'Data not available' and exclude from results
 - Return JSON only, with no narrative text, explanations, or inline comments (e.g., // )
 - Ensure all firms meet the $10-20M revenue criterion""",
         "sources": [
@@ -270,7 +270,7 @@ Target Firms:
 Research Methodology:
 - Identify 5 firms meeting all criteria
 - Cross-reference data from industry reports (e.g., IBISWorld, Gartner), financial databases (e.g., PitchBook), company websites, and LinkedIn
-- Validate through client testimonials, press releases, and public records
+- Validate through client testimonials, press releases, and public records; data must be confirmed by at least two credible sources listed below
 - Exclude firms with incomplete data or revenue outside $10-20M
 
 Evaluation Criteria:
@@ -320,7 +320,7 @@ Output Requirements:
   }
   ```
 - Include 2-3 credible sources per firm
-- If data is unavailable, provide estimates with assumptions or mark as 'Data not available'
+- If data is unavailable or cannot be validated by at least two sources, mark as 'Data not available' and exclude from results
 - Return JSON only, with no narrative text, explanations, or inline comments (e.g., // )
 - Ensure all firms meet the $10-20M revenue criterion""",
         "sources": [
@@ -344,7 +344,7 @@ Target Firms:
 Research Methodology:
 - Identify exactly 7 firms meeting all criteria
 - Cross-reference data from company websites, industry reports (e.g., Procurement Leaders, CIPS), financial databases (e.g., PitchBook), and LinkedIn
-- Validate through public records, client testimonials, and case studies
+- Validate through public records, client testimonials, and case studies; data must be confirmed by at least two credible sources listed below
 - Exclude firms with incomplete data or revenue outside $10-20M
 
 Evaluation Criteria:
@@ -394,7 +394,7 @@ Output Requirements:
   }
   ```
 - Include 2-3 credible sources per firm
-- If data is unavailable, provide estimates with assumptions or mark as 'Data not available'
+- If data is unavailable or cannot be validated by at least two sources, mark as 'Data not available' and exclude from results
 - Return JSON only, with no narrative text, explanations, or inline comments (e.g., // )
 - Ensure all firms meet the $10-20M revenue criterion""",
         "sources": [
@@ -420,7 +420,7 @@ Target Firms:
 Research Methodology:
 - Identify 4 firms meeting all criteria
 - Cross-reference data from company websites, industry reports (e.g., Retail Dive, PDMA), financial databases (e.g., PitchBook), and LinkedIn
-- Validate through public records, client testimonials, and case studies
+- Validate through public records, client testimonials, and case studies; data must be confirmed by at least two credible sources listed below
 - Exclude firms with incomplete data or revenue outside $10-20M
 
 Evaluation Criteria:
@@ -468,7 +468,7 @@ Output Requirements:
   ]
   ```
 - Include 2-3 credible sources per firm
-- If data is unavailable, provide estimates with assumptions or mark as 'Data not available'
+- If data is unavailable or cannot be validated by at least two sources, mark as 'Data not available' and exclude from results
 - Return JSON only, with no narrative text, explanations, or inline comments (e.g., // )
 - Ensure all firms meet the $10-20M revenue criterion""",
         "sources": [
@@ -492,7 +492,7 @@ Target Firms:
 Research Methodology:
 - Identify 4 firms meeting all criteria
 - Cross-reference data from company websites, industry reports (e.g., Gartner, Supply Chain Dive), financial databases (e.g., PitchBook), and LinkedIn
-- Validate through public records, client testimonials, and case studies
+- Validate through public records, client testimonials, and case studies; data must be confirmed by at least two credible sources listed below
 - Exclude firms with incomplete data or revenue outside $10-20M
 
 Evaluation Criteria:
@@ -542,7 +542,7 @@ Output Requirements:
   }
   ```
 - Include 2-3 credible sources per firm
-- If data is unavailable, provide estimates with assumptions or mark as 'Data not available'
+- If data is unavailable or cannot be validated by at least two sources, mark as 'Data not available' and exclude from results
 - Return JSON only, with no narrative text, explanations, or inline comments (e.g., // )
 - Ensure all firms meet the $10-20M revenue criterion""",
         "sources": [
@@ -573,7 +573,7 @@ class MergerSearchResponse(BaseModel):
 class EnrichCompanyRequest(BaseModel):
     company_domain: str
 
-# Apollo API enrichment function (unchanged)
+# Apollo API enrichment function
 def enrich_company(company_domain: Optional[str] = None, log_file: Optional[str] = "apollo_enrich.log") -> Dict:
     url = "https://api.apollo.io/api/v1/organizations/enrich"
     
@@ -595,6 +595,12 @@ def enrich_company(company_domain: Optional[str] = None, log_file: Optional[str]
         response.raise_for_status()
         
         data = response.json()
+        # Log raw Apollo response
+        Path("apollo_logs").mkdir(exist_ok=True)
+        with open(f"apollo_logs/{time.time()}.json", "w") as f:
+            json.dump(data, f, indent=2)
+        logger.info(f"Apollo API response for {company_domain} logged to apollo_logs")
+        
         if data.get("organization"):
             return data["organization"]
         else:
@@ -607,8 +613,71 @@ def enrich_company(company_domain: Optional[str] = None, log_file: Optional[str]
                 error_detail["response"] = e.response.json()
             except ValueError:
                 error_detail["response"] = e.response.text
-        logger.error(f"Apollo API error: {error_detail}")
+        logger.error(f"Apollo API error for {company_domain}: {error_detail}")
         return error_detail
+
+# Validate and update company data with Apollo API
+def validate_company_data(perplexity_data: Dict, apollo_data: Dict) -> Dict:
+    validated = perplexity_data.copy()
+    validation_warnings = []
+
+    # Update revenue
+    if apollo_data.get("annual_revenue_printed"):
+        apollo_revenue = apollo_data["annual_revenue_printed"]
+        perplexity_revenue = perplexity_data.get("estimated_revenue", "")
+        try:
+            apollo_revenue_val = float(apollo_revenue.replace("$", "").replace("M", ""))
+            perplexity_revenue_val = float(perplexity_revenue.replace("$", "").replace("M", ""))
+            if abs(apollo_revenue_val - perplexity_revenue_val) > 5:
+                validation_warnings.append(
+                    f"Revenue discrepancy: Perplexity={perplexity_revenue}, Apollo={apollo_revenue}"
+                )
+            validated["estimated_revenue"] = f"${apollo_revenue_val}M"
+        except (ValueError, TypeError):
+            validation_warnings.append(
+                f"Invalid revenue format: Perplexity={perplexity_revenue}, Apollo={apollo_revenue}"
+            )
+
+    # Update employee count
+    if apollo_data.get("estimated_num_employees"):
+        apollo_employees = apollo_data["estimated_num_employees"]
+        perplexity_employees = perplexity_data.get("employee_count", "")
+        try:
+            apollo_count = int(apollo_employees)
+            perplexity_count = int(perplexity_employees.split("-")[0].replace("employees", "").strip()) if "-" in perplexity_employees else int(perplexity_employees.replace("employees", "").strip())
+            if abs(apollo_count - perplexity_count) > 20:
+                validation_warnings.append(
+                    f"Employee count discrepancy: Perplexity={perplexity_employees}, Apollo={apollo_employees}"
+                )
+            validated["employee_count"] = f"{apollo_employees} employees"
+        except (ValueError, TypeError):
+            validation_warnings.append(
+                f"Invalid employee count format: Perplexity={perplexity_employees}, Apollo={apollo_employees}"
+            )
+
+    # Update office locations
+    if apollo_data.get("city") and apollo_data.get("state"):
+        apollo_location = f"{apollo_data['city']}, {apollo_data['state']}"
+        perplexity_locations = perplexity_data.get("office_locations", [])
+        if apollo_location not in perplexity_locations:
+            validation_warnings.append(
+                f"Location discrepancy: Perplexity={perplexity_locations}, Apollo={apollo_location}"
+            )
+            validated["office_locations"] = [apollo_location] + perplexity_locations
+
+    # Update technology tools
+    if apollo_data.get("technology_names"):
+        apollo_tech = apollo_data["technology_names"]
+        perplexity_tech = perplexity_data.get("technology_tools", [])
+        validated["technology_tools"] = list(set(apollo_tech + perplexity_tech))
+
+    # Update primary domains
+    if apollo_data.get("keywords"):
+        apollo_domains = [kw for kw in apollo_data["keywords"] if kw in perplexity_data.get("primary_domains", [])]
+        validated["primary_domains"] = list(set(apollo_domains + perplexity_data.get("primary_domains", [])))
+
+    validated["validation_warnings"] = validation_warnings
+    return validated
 
 # API Functions
 @retry_api_call(max_attempts=3, delay=2.0)
@@ -624,7 +693,7 @@ async def query_lyzr_agent(agent_id: str, session_id: str, prompt: str) -> Optio
         response.raise_for_status()
         json_response = response.json()
         raw_response = json_response.get("response", "{}")
-        print(f"Raw API response (first 200 chars): {raw_response}")
+        print("response",response.json())
         logger.info(f"API response size: {len(str(json_response))} bytes")
         json_response["response"] = sanitize_json_string(raw_response)
         return json_response
@@ -643,41 +712,18 @@ def extract_companies(json_content: any) -> List[str]:
     companies = []
     
     def recursive_search(node):
-        nonlocal companies
         if isinstance(node, dict):
-            if 'name' in node and 'domain_name' in node:
+            if 'name' in node and isinstance(node['name'], str):
                 companies.append(node['name'])
-                return True
-            for k, v in node.items():
-                if recursive_search(v):
-                    return True
+            for value in node.values():
+                recursive_search(value)
         elif isinstance(node, list):
             for item in node:
                 recursive_search(item)
-        return False
-
-    try:
-        # First check standard structures
-        if isinstance(json_content, list):
-            companies = [item.get('name', '') for item in json_content if isinstance(item, dict)]
-            return list(filter(None, companies))
-        
-        if isinstance(json_content, dict):
-            if 'companies' in json_content:
-                return extract_companies(json_content['companies'])
-            
-            # Deep search for company-like structures
-            if recursive_search(json_content):
-                return list(filter(None, companies))
-            
-        # Fallback to key pattern matching
-        companies = re.findall(
-            r'"name"\s*:\s*"([^"]+)"', 
-            json.dumps(json_content), 
-            re.IGNORECASE
-        )
-        return list(set(filter(lambda x: 'example' not in x.lower(), companies)))
     
+    try:
+        recursive_search(json_content)
+        return sorted(list(set(filter(None, companies))))
     except Exception as e:
         logger.error(f"Deep extraction failed: {e}")
         return []
@@ -761,6 +807,7 @@ Output Requirements:
             return {}
     return {}
 
+
 # API Endpoints
 @app.get("/prompts", summary="List Available Prompts", description="Returns the list of available search prompts.")
 async def list_prompts() -> List[Dict]:
@@ -781,16 +828,17 @@ async def run_prompt(request: PromptRequest) -> Dict:
     return processed
 
 def process_api_response(response: Dict, prompt_data: Dict) -> Dict:
-    """Unified response processing with forensic logging"""
+    """Process Perplexity response and validate with Apollo API"""
     raw_content = response.get('response', '')
     
-    # Forensic logging
-    logger.debug(f"Raw API response:\n{raw_content[:2000]}")
+    # Forensic logging for Perplexity response
+    logger.debug(f"Raw Perplexity API response:\n{raw_content[:2000]}")
     Path("api_logs").mkdir(exist_ok=True)
-    with open(f"api_logs/{time.time()}.json", "w") as f:
+    log_file = f"api_logs/{time.time()}.json"
+    with open(log_file, "w") as f:
         f.write(raw_content)
     
-    # Multi-stage processing
+    # Sanitize and parse response
     sanitized = sanitize_json_string(raw_content)
     try:
         json_content = json.loads(sanitized)
@@ -799,22 +847,62 @@ def process_api_response(response: Dict, prompt_data: Dict) -> Dict:
         return {
             "error": "Invalid JSON structure",
             "diagnosis": diagnose_json_issues(sanitized),
-            "raw_sample": raw_content[:500]
+            "raw_sample": raw_content[:500],
+            "title": prompt_data["title"],
+            "sources": prompt_data["sources"],
+            "companies": [],
+            "validation_warnings": ["Invalid JSON response"]
         }
     
-    companies = extract_companies(json_content)
+    # Validate company data
+    validated_companies = []
+    validation_warnings = []
+    for company in json_content if isinstance(json_content, list) else []:
+        if not isinstance(company, dict):
+            continue
+        # Check required fields
+        required_fields = ["name", "domain_name", "estimated_revenue", "employee_count", "office_locations"]
+        missing_fields = [field for field in required_fields if not company.get(field)]
+        if missing_fields:
+            validation_warnings.append(f"Company {company.get('name', 'unknown')} missing fields: {missing_fields}")
+            continue
+        # Validate revenue range ($10-20M)
+        revenue_str = company.get("estimated_revenue", "")
+        try:
+            revenue = float(revenue_str.replace("$", "").replace("M", ""))
+            if not (10 <= revenue <= 20):
+                validation_warnings.append(f"Company {company['name']} revenue {revenue}M outside $10-20M range")
+                continue
+        except (ValueError, TypeError):
+            validation_warnings.append(f"Invalid revenue format for {company['name']}: {revenue_str}")
+            continue
+
+        # Validate with Apollo API
+        logger.info(f"Fetching Apollo data for {company['name']} with domain {company['domain_name']}")
+        time.sleep(0.5)  # Avoid Apollo rate limiting
+        apollo_data = enrich_company(company.get("domain_name"))
+        if "error" not in apollo_data:
+            validated_company = validate_company_data(company, apollo_data)
+            validated_companies.append(validated_company)
+            validation_warnings.extend(validated_company.get("validation_warnings", []))
+        else:
+            validation_warnings.append(f"Apollo API failed for {company['name']}: {apollo_data['error']}")
+
+    # Extract company names
+    companies = [company["name"] for company in validated_companies]
+
     return {
         "title": prompt_data["title"],
-        "response": json_content,
+        "response": validated_companies,
         "companies": companies,
-        "sources": prompt_data["sources"]
+        "sources": prompt_data["sources"],
+        "validation_warnings": validation_warnings
     }
 
 def diagnose_json_issues(json_str: str) -> Dict:
     """Detailed JSON diagnostics"""
     diagnosis = {"unclosed_constructs": [], "string_issues": []}
     
-    # Track brackets/braces
     stack = []
     for i, c in enumerate(json_str):
         if c in '{[':
@@ -829,7 +917,6 @@ def diagnose_json_issues(json_str: str) -> Dict:
                     f"Mismatch: {last[0]} at {last[1]} vs {c} at {i}"
                 )
     
-    # Find unterminated strings
     in_string = False
     escape = False
     start_pos = 0
@@ -878,26 +965,30 @@ async def run_merger_search_endpoint() -> MergerSearchResponse:
         response = await query_perplexity(prompt_data['content'])
         if response:
             try:
-                json_content = json.loads(sanitize_json_string(response.get('response', '{}')))
-                companies = extract_companies(json_content)
+                processed_response = process_api_response(response, prompt_data)
+                json_content = processed_response["response"]
+                companies = processed_response["companies"]
                 raw_responses[prompt_data['title']] = json.dumps(json_content, indent=2)
                 all_companies.extend(companies)
                 results[prompt_data['title']] = {
                     "raw_response": json_content,
-                    "extracted_companies": companies
+                    "extracted_companies": companies,
+                    "validation_warnings": processed_response.get("validation_warnings", [])
                 }
-            except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse response for {prompt_data['title']} as JSON: {e}")
-                json_content = {"error": "Invalid JSON response", "raw_content": response.get('response', '')}
+            except Exception as e:
+                logger.error(f"Failed to process response for {prompt_data['title']}: {e}")
+                json_content = {"error": "Response processing failed", "raw_content": response.get('response', '')}
                 results[prompt_data['title']] = {
                     "raw_response": json_content,
-                    "extracted_companies": []
+                    "extracted_companies": [],
+                    "validation_warnings": [str(e)]
                 }
         else:
             logger.error(f"Lyzr agent API request failed for {prompt_data['title']}")
             results[prompt_data['title']] = {
                 "raw_response": {"error": "API request failed"},
-                "extracted_companies": []
+                "extracted_companies": [],
+                "validation_warnings": ["API request failed"]
             }
         time.sleep(2)  # Avoid rate limiting
 
@@ -949,11 +1040,11 @@ async def download_json() -> FileResponse:
 async def enrich_company_endpoint(request: EnrichCompanyRequest) -> Dict:
     if not request.company_domain.strip():
         raise HTTPException(status_code=400, detail="Company domain cannot be empty")
-    result = enrich_company(company_domain=request.company_domain)
+    result = enrich_company(request.company_domain)
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
     return result
 
-@app.route('/health', methods=['GET'])
-def health_check():
-    return jsonify({"status": "ok"}), 200
+@app.get('/health', summary="Health Check", description="Checks the health status of the API.")
+async def health_check():
+    return {"status": "ok"}
