@@ -685,7 +685,10 @@ def extract_companies(json_content: any) -> List[str]:
 async def analyze_with_claude(companies: List[str], raw_responses: Dict[str, str]) -> Optional[Dict]:
     full_context = "\n\n".join([f"### {title}\n{content}" for title, content in raw_responses.items()])
     company_list = "\n".join([f"- {company}" for company in companies])
-    analysis_prompt = """Analyze the provided list of boutique retail consulting firms for merger potential based on the following criteria weightings:
+    print("Full context", full_context)
+    print("company list", company_list)
+    analysis_prompt = """
+Analyze the provided list of boutique retail consulting firms for merger potential based on the following criteria weightings:
 - Financial Health (30%): Revenue, growth rate, profitability, valuation multiples
 - Strategic Fit (30%): Service overlap, client base compatibility, market positioning
 - Operational Compatibility (20%): Geographic presence, employee count, technology stack
@@ -703,6 +706,11 @@ Analysis Methodology:
 4. Leadership and Innovation: Review leadership experience, proprietary methodologies, and innovation metrics
 5. Cultural and Integration Risks: Analyze cultural alignment and potential integration challenges
 
+Constraints:
+- Only analyze the companies explicitly listed in the provided company_list
+- Do not include or evaluate any companies not present in the company_list
+- If a company in the company_list lacks sufficient data, include it in the output with scores based on available data or reasonable estimates, noting assumptions in the rationale
+
 Output Requirements:
 - Return a JSON object with the following structure:
   ```json
@@ -717,31 +725,33 @@ Output Requirements:
           "operational_compatibility_score": <float, 0-100>,
           "leadership_innovation_score": <float, 0-100>,
           "cultural_integration_score": <float, 0-100>,
-          "rationale": "<string, brief explanation of ranking>"
-        },
-
+          "rationale": "<string, brief explanation of ranking, including any assumptions for missing data>"
+        }
       ],
       "recommendations": [
         {
           "name": "<string>",
           "merger_potential": "<string, e.g., High/Medium/Low>",
-          "key_synergies": ["<string>", ],
-          "potential_risks": ["<string>", ]
-        },
-
+          "key_synergies": ["<string>"],
+          "potential_risks": ["<string>"]
+        }
       ],
-      "summary": "<string, 2-3 sentences summarizing the analysis>"
+      "summary": "<string, 2-3 sentences summarizing the analysis of the provided companies>"
     }
   }
   ```
+- Include only the companies from the provided company_list in the rankings and recommendations
 - Rank all provided firms based on weighted scores
-- Provide actionable recommendations for each firm
-- Include a concise summary of findings
-- Return JSON only, with no narrative text, explanations, or inline comments (e.g., // )
-- If data is missing, use reasonable estimates and note assumptions in the rationale"""
+- Provide actionable recommendations for each listed firm
+- Include a concise summary of findings focused on the listed companies
+- Return JSON only, with no narrative text, explanations, or inline comments
+- If data is missing for a listed company, use reasonable estimates and note assumptions in the rationale
+- Ensure the company_list is populated with valid company names before analysis
+- Validate that full_context contains sufficient data for analysis, and handle empty or malformed inputs gracefully
+"""
 
-
-    response = await query_claude(analysis_prompt)
+    print("Prompt", analysis_prompt)
+    response = await query_claude(analysis_prompt+""+company_list+""+full_context)
     if response:
         try:
             json_content = json.loads(sanitize_json_string(response.get("response", "{}")))
