@@ -12,6 +12,8 @@ import logging
 from dotenv import load_dotenv
 import os
 import re
+import httpx
+import asyncio
 
 # Load environment variables from .env file
 load_dotenv()
@@ -36,6 +38,7 @@ app.add_middleware(
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+async_client = httpx.AsyncClient(timeout=90.0)
 # Load Lyzr agent API settings from environment variables
 LYZR_AGENT_URL = os.getenv("LYZR_AGENT_URL")
 LYZR_API_KEY = os.getenv("LYZR_API_KEY")
@@ -183,6 +186,31 @@ def retry_api_call(max_attempts: int = 3, delay: float = 2.0):
             return None
         return wrapper
     return decorator
+
+
+def async_retry(max_attempts: int = 3, delay: float = 2.0):
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            for attempt in range(max_attempts):
+                try:
+                    result = await func(*args, **kwargs)
+                    if result and isinstance(result.get("response"), str):
+                        try:
+                            json.loads(sanitize_json_string(result["response"]))
+                            return result
+                        except json.JSONDecodeError:
+                            logger.warning(f"Invalid JSON on attempt {attempt + 1}")
+                    logger.warning(f"API call returned None or invalid response on attempt {attempt + 1}")
+                except Exception as e:
+                    logger.error(f"API call failed on attempt {attempt + 1}: {e}")
+                if attempt < max_attempts - 1:
+                    await asyncio.sleep(delay)  # Use async sleep
+            logger.error(f"API call failed after {max_attempts} attempts")
+            return None
+        return wrapper
+    return decorator
+
 
 # Search prompts with stricter validation
 search_prompts = [
@@ -574,47 +602,19 @@ class EnrichCompanyRequest(BaseModel):
     company_domain: str
 
 # Apollo API enrichment function
-def enrich_company(company_domain: Optional[str] = None, log_file: Optional[str] = "apollo_enrich.log") -> Dict:
-    url = "https://api.apollo.io/api/v1/organizations/enrich"
-    
-    params = {}
-    if company_domain and isinstance(company_domain, str) and company_domain.strip():
-        params["domain"] = company_domain
-    else:
-        return {"error": "Company domain is required for enrichment"}
-    
-    headers = {
-        "accept": "application/json",
-        "Cache-Control": "no-cache",
-        "Content-Type": "application/json",
-        "x-api-key": APOLLO_API_KEY
-    }
-    
-    try:
-        response = requests.get(url, params=params, headers=headers)
-        response.raise_for_status()
-        
-        data = response.json()
-        # Log raw Apollo response
-        Path("apollo_logs").mkdir(exist_ok=True)
-        with open(f"apollo_logs/{time.time()}.json", "w") as f:
-            json.dump(data, f, indent=2)
-        logger.info(f"Apollo API response for {company_domain} logged to apollo_logs")
-        
-        if data.get("organization"):
-            return data["organization"]
-        else:
-            return {"error": "Company not found or insufficient matching data", "response": data}
-    
-    except requests.exceptions.RequestException as e:
-        error_detail = {"error": f"API request failed: {str(e)}"}
-        if isinstance(e, requests.exceptions.HTTPError) and e.response:
-            try:
-                error_detail["response"] = e.response.json()
-            except ValueError:
-                error_detail["response"] = e.response.text
-        logger.error(f"Apollo API error for {company_domain}: {error_detail}")
-        return error_detail
+async def enrich_company(company_domain: str):
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(
+                "https://api.apollo.io/api/v1/organizations/enrich",
+                params={"domain": company_domain},
+                headers={"x-api-key": APOLLO_API_KEY}
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logger.error(f"Apollo API error: {str(e)}")
+            return {"error": str(e)}
 
 # Validate and update company data with Apollo API
 def validate_company_data(perplexity_data: Dict, apollo_data: Dict) -> Dict:
@@ -680,7 +680,7 @@ def validate_company_data(perplexity_data: Dict, apollo_data: Dict) -> Dict:
     return validated
 
 # API Functions
-@retry_api_call(max_attempts=3, delay=2.0)
+@async_retry(max_attempts=3, delay=2.0)
 async def query_lyzr_agent(agent_id: str, session_id: str, prompt: str) -> Optional[Dict]:
     payload = {
         "user_id": LYZR_USER_ID,
@@ -689,7 +689,11 @@ async def query_lyzr_agent(agent_id: str, session_id: str, prompt: str) -> Optio
         "message": prompt
     }
     try:
-        response = requests.post(LYZR_AGENT_URL, json=payload, headers=LYZR_AGENT_HEADERS)
+        response = await async_client.post(
+            LYZR_AGENT_URL,
+            json=payload,
+            headers=LYZR_AGENT_HEADERS
+        )
         response.raise_for_status()
         json_response = response.json()
         raw_response = json_response.get("response", "{}")
@@ -697,9 +701,33 @@ async def query_lyzr_agent(agent_id: str, session_id: str, prompt: str) -> Optio
         logger.info(f"API response size: {len(str(json_response))} bytes")
         json_response["response"] = sanitize_json_string(raw_response)
         return json_response
-    except requests.exceptions.RequestException as e:
+    except Exception as e:
         logger.error(f"Lyzr agent API error: {e}")
         raise
+
+
+async def process_prompt_batch(prompt_data: Dict) -> Dict:
+    try:
+        response = await query_perplexity(prompt_data['content'])
+        if not response:
+            return {"error": "API request failed", "title": prompt_data['title']}
+
+        processed = await process_api_response(response, prompt_data)
+        return {
+            "title": prompt_data['title'],
+            "response": processed.get("response", []),
+            "companies": processed.get("companies", []),
+            "validation_warnings": processed.get("validation_warnings", [])
+        }
+    except Exception as e:
+        logger.error(f"Prompt processing failed for {prompt_data['title']}: {str(e)}")
+        return {
+            "title": prompt_data['title'],
+            "response": [],
+            "companies": [],
+            "validation_warnings": [f"Processing error: {str(e)}"]
+        }
+
 
 async def query_perplexity(prompt: str) -> Optional[Dict]:
     return await query_lyzr_agent(LYZR_PERPLEXITY_AGENT_ID, LYZR_PERPLEXITY_SESSION_ID, prompt)
@@ -824,10 +852,10 @@ async def run_prompt(request: PromptRequest) -> Dict:
     if not response:
         raise HTTPException(status_code=500, detail="API request failed")
 
-    processed = process_api_response(response, prompt_data)
+    processed = await process_api_response(response, prompt_data)
     return processed
 
-def process_api_response(response: Dict, prompt_data: Dict) -> Dict:
+async def process_api_response(response: Dict, prompt_data: Dict) -> Dict:
     """Process Perplexity response and validate with Apollo API"""
     raw_content = response.get('response', '')
     
@@ -879,8 +907,8 @@ def process_api_response(response: Dict, prompt_data: Dict) -> Dict:
 
         # Validate with Apollo API
         logger.info(f"Fetching Apollo data for {company['name']} with domain {company['domain_name']}")
-        time.sleep(0.5)  # Avoid Apollo rate limiting
-        apollo_data = enrich_company(company.get("domain_name"))
+        await asyncio.sleep(0.5)  # Non-blocking sleep to avoid Apollo rate limiting
+        apollo_data = await enrich_company(company.get("domain_name"))
         if "error" not in apollo_data:
             validated_company = validate_company_data(company, apollo_data)
             validated_companies.append(validated_company)
@@ -955,62 +983,63 @@ async def analyze_companies(request: AnalysisRequest) -> Dict:
 
 @app.post("/run_merger_search", summary="Run Full Merger Search", description="Executes the full merger search process, including running all prompts, extracting companies, saving results, and analyzing with Claude via Lyzr agent API, returning all responses as JSON objects.")
 async def run_merger_search_endpoint() -> MergerSearchResponse:
-    results: Dict = {}
-    all_companies: List[str] = []
-    raw_responses: Dict[str, str] = {}
+    # Create processing tasks for all prompts
+    batch_tasks = [process_prompt_batch(p) for p in search_prompts]
+    
+    # Run all prompts in parallel
+    batch_results = await asyncio.gather(*batch_tasks)
 
-    # Step 1: Run all search prompts
-    for i, prompt_data in enumerate(search_prompts):
-        logger.info(f"Running prompt {i+1}/{len(search_prompts)}: {prompt_data['title']}")
-        response = await query_perplexity(prompt_data['content'])
-        if response:
-            try:
-                processed_response = process_api_response(response, prompt_data)
-                json_content = processed_response["response"]
-                companies = processed_response["companies"]
-                raw_responses[prompt_data['title']] = json.dumps(json_content, indent=2)
-                all_companies.extend(companies)
-                results[prompt_data['title']] = {
-                    "raw_response": json_content,
-                    "extracted_companies": companies,
-                    "validation_warnings": processed_response.get("validation_warnings", [])
-                }
-            except Exception as e:
-                logger.error(f"Failed to process response for {prompt_data['title']}: {e}")
-                json_content = {"error": "Response processing failed", "raw_content": response.get('response', '')}
-                results[prompt_data['title']] = {
-                    "raw_response": json_content,
-                    "extracted_companies": [],
-                    "validation_warnings": [str(e)]
-                }
-        else:
-            logger.error(f"Lyzr agent API request failed for {prompt_data['title']}")
-            results[prompt_data['title']] = {
-                "raw_response": {"error": "API request failed"},
-                "extracted_companies": [],
-                "validation_warnings": ["API request failed"]
-            }
-        time.sleep(2)  # Avoid rate limiting
+    # Process results
+    results = {}
+    all_companies = []
+    raw_responses = {}
 
-    # Step 2: Consolidate companies
+    for result in batch_results:
+        if "error" in result:
+            logger.error(f"Failed batch item: {result['title']}")
+            continue
+            
+        key = result["title"]
+        results[key] = {
+            "raw_response": result["response"],
+            "extracted_companies": result["companies"],
+            "validation_warnings": result["validation_warnings"]
+        }
+        all_companies.extend(result["companies"])
+        raw_responses[key] = json.dumps(result["response"], indent=2)
+
+    # Deduplicate companies
     all_companies = sorted(list(set(all_companies)))
-    results["consolidated_companies"] = all_companies
 
-    # Step 3: Save to CSV
-    companies_df = pd.DataFrame({"Company": all_companies})
-    companies_df.to_csv("identified_companies.csv", index=False)
+    # Save results concurrently
+    io_tasks = [
+        save_to_csv(all_companies),
+        save_to_json(results)
+    ]
+    await asyncio.gather(*io_tasks)
 
-    # Step 4: Claude analysis
-    claude_analysis = await analyze_with_claude(all_companies, raw_responses)
-    results["claude_analysis"] = claude_analysis
-
-    # Step 5: Save to JSON
-    with open('merger_search_results.json', 'w') as f:
-        json.dump(results, f, indent=2)
+    # Parallel analysis
+    analysis_task = analyze_with_claude(all_companies, raw_responses)
+    claude_analysis = await analysis_task
 
     return MergerSearchResponse(
-        results=results,
-        message="Merger search completed. Results saved to 'identified_companies.csv' and 'merger_search_results.json'."
+        results={**results, "claude_analysis": claude_analysis},
+        message="Merger search completed with parallel processing"
+    )
+
+
+async def save_to_csv(companies: List[str]):
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(
+        None, 
+        lambda: pd.DataFrame({"Company": companies}).to_csv("identified_companies.csv", index=False)
+    )
+
+async def save_to_json(data: Dict):
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(
+        None,
+        lambda: json.dump(data, open('merger_search_results.json', 'w'), indent=2)
     )
 
 @app.get("/results", summary="Get Saved Results", description="Retrieves the saved merger search results from the JSON file.")
