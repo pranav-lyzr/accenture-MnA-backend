@@ -14,6 +14,8 @@ import os
 import re
 import httpx
 import asyncio
+import ast
+from functools import wraps
 
 # Load environment variables from .env file
 load_dotenv()
@@ -39,14 +41,12 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 async_client = httpx.AsyncClient(timeout=90.0)
+
 # Load Lyzr agent API settings from environment variables
 LYZR_AGENT_URL = os.getenv("LYZR_AGENT_URL")
 LYZR_API_KEY = os.getenv("LYZR_API_KEY")
 LYZR_USER_ID = os.getenv("LYZR_USER_ID")
-LYZR_PERPLEXITY_AGENT_ID = os.getenv("LYZR_PERPLEXITY_AGENT_ID")
 LYZR_PERPLEXITY_SESSION_ID = os.getenv("LYZR_PERPLEXITY_SESSION_ID")
-LYZR_CLAUDE_AGENT_ID = os.getenv("LYZR_CLAUDE_AGENT_ID")
-LYZR_CLAUDE_SESSION_ID = os.getenv("LYZR_CLAUDE_SESSION_ID")
 APOLLO_API_KEY = os.getenv("APOLLO_API_KEY")
 
 # Validate required environment variables
@@ -54,10 +54,7 @@ required_env_vars = {
     "LYZR_AGENT_URL": LYZR_AGENT_URL,
     "LYZR_API_KEY": LYZR_API_KEY,
     "LYZR_USER_ID": LYZR_USER_ID,
-    "LYZR_PERPLEXITY_AGENT_ID": LYZR_PERPLEXITY_AGENT_ID,
     "LYZR_PERPLEXITY_SESSION_ID": LYZR_PERPLEXITY_SESSION_ID,
-    "LYZR_CLAUDE_AGENT_ID": LYZR_CLAUDE_AGENT_ID,
-    "LYZR_CLAUDE_SESSION_ID": LYZR_CLAUDE_SESSION_ID,
     "APOLLO_API_KEY": APOLLO_API_KEY
 }
 for var_name, var_value in required_env_vars.items():
@@ -71,30 +68,20 @@ LYZR_AGENT_HEADERS = {
     "x-api-key": LYZR_API_KEY
 }
 
-import ast
-
 def sanitize_json_string(json_str: any) -> str:
     """
     Comprehensive JSON sanitization with multi-stage repair capabilities
     Handles smart quotes, unescaped characters, and complex code blocks
     """
-    # Initial cleaning and conversion
     json_str = str(json_str).strip()
     if not json_str:
         return "{}"
 
-    # Remove all ASCII control characters except newline/tab
-    json_str = re.sub(r'[\x00-\x09\x0b-\x1f\x7f]', '', json_str)
-    
-    # Handle mixed code block formats
-    json_str = re.sub(
-        r'(?:```(?:json)?|~~~)(.*?)(?:```|~~~)', 
-        lambda m: m.group(1).strip(), 
-        json_str, 
-        flags=re.DOTALL
-    )
+    code_block_match = re.search(r'```(?:json)?\s*(.*?)\s*```', json_str, re.DOTALL)
+    if code_block_match:
+        json_str = code_block_match.group(1).strip()
 
-    # Convert smart quotes and other Unicode characters
+    json_str = re.sub(r'[\x00-\x09\x0b-\x1f\x7f]', '', json_str)
     replacements = {
         '“': '"', '”': '"', '‘': "'", '’': "'",
         '\u2028': ' ', '\u2029': ' ', '\ufeff': ''
@@ -102,15 +89,6 @@ def sanitize_json_string(json_str: any) -> str:
     for bad, good in replacements.items():
         json_str = json_str.replace(bad, good)
 
-    # Fix multiline strings and unescaped quotes
-    json_str = re.sub(
-        r'"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'',  # Fixed single quote handling
-        lambda m: m.group(0).replace('\n', '\\n'),
-        json_str,
-        flags=re.DOTALL
-    )
-
-    # Stage 1: Attempt direct parse
     try:
         json.loads(json_str)
         return json_str
@@ -118,16 +96,13 @@ def sanitize_json_string(json_str: any) -> str:
         error_pos = e.pos
         logger.warning(f"Initial parse failed at {error_pos}: {e}")
 
-    # Stage 2: Context-aware repair
     try:
-        # Handle common unterminated strings
         if "Unterminated string" in str(e):
             quote_char = json_str[error_pos-1]
             end_quote = json_str.find(quote_char, error_pos)
             if end_quote == -1:
                 json_str += quote_char
-                
-        # Balance braces/brackets using stack logic
+
         stack = []
         for i, c in enumerate(json_str):
             if c in '{[':
@@ -139,55 +114,25 @@ def sanitize_json_string(json_str: any) -> str:
                 last = stack.pop()
                 if (c == '}' and last != '{') or (c == ']' and last != '['):
                     json_str = json_str[:i] + json_str[i+1:]
-        
+
         while stack:
             json_str += '}' if stack.pop() == '{' else ']'
 
-        # Final validation
         return json.dumps(json.loads(json_str), indent=None)
     except Exception:
         pass
 
-    # Stage 3: Safe fallback using literal_eval
     try:
         parsed = ast.literal_eval(json_str)
         return json.dumps(parsed)
     except Exception as e:
         logger.error(f"Literal eval fallback failed: {e}")
 
-    # Final fallback: Wrap in array if root object
     if json_str.startswith('{'):
         return f'[{json_str}]'
     return json_str
 
 # Retry decorator for API calls
-from functools import wraps
-import time
-
-def retry_api_call(max_attempts: int = 3, delay: float = 2.0):
-    def decorator(func):
-        @wraps(func)
-        async def wrapper(*args, **kwargs):
-            for attempt in range(max_attempts):
-                try:
-                    result = await func(*args, **kwargs)
-                    if result and isinstance(result.get("response"), str):
-                        try:
-                            json.loads(sanitize_json_string(result["response"]))
-                            return result
-                        except json.JSONDecodeError:
-                            logger.warning(f"Invalid JSON on attempt {attempt + 1}")
-                    logger.warning(f"API call returned None or invalid response on attempt {attempt + 1}")
-                except requests.exceptions.RequestException as e:
-                    logger.error(f"API call failed on attempt {attempt + 1}: {e}")
-                if attempt < max_attempts - 1:
-                    time.sleep(delay)
-            logger.error(f"API call failed after {max_attempts} attempts")
-            return None
-        return wrapper
-    return decorator
-
-
 def async_retry(max_attempts: int = 3, delay: float = 2.0):
     def decorator(func):
         @wraps(func)
@@ -195,7 +140,13 @@ def async_retry(max_attempts: int = 3, delay: float = 2.0):
             for attempt in range(max_attempts):
                 try:
                     result = await func(*args, **kwargs)
-                    if result and isinstance(result.get("response"), str):
+                    # Check if result is a dictionary with expected keys for enrich_company
+                    if func.__name__ == "enrich_company":
+                        if isinstance(result, dict) and ("name" in result or "error" in result):
+                            return result
+                        logger.warning(f"Invalid enrich_company result on attempt {attempt + 1}: {result}")
+                    # Original check for Lyzr API responses
+                    elif result and isinstance(result.get("response"), str):
                         try:
                             json.loads(sanitize_json_string(result["response"]))
                             return result
@@ -205,41 +156,40 @@ def async_retry(max_attempts: int = 3, delay: float = 2.0):
                 except Exception as e:
                     logger.error(f"API call failed on attempt {attempt + 1}: {e}")
                 if attempt < max_attempts - 1:
-                    await asyncio.sleep(delay)  # Use async sleep
+                    await asyncio.sleep(delay)
             logger.error(f"API call failed after {max_attempts} attempts")
             return None
         return wrapper
     return decorator
 
-
-# Search prompts with stricter validation
+# Search prompts with agent-ID
 search_prompts = [
     {
         "title": "Initial Target Identification",
+        "agent-ID": "6812315c360229f1a4e77f3b",
         "content": """Identify boutique retail consulting firms for merger potential with the following criteria:
 
 Target Firms:
-- Headquartered in North America
-- Annual revenue: Strictly $10-20M (exclude firms with revenue outside this range)
+- Headquartered in North America, Europe
+- Annual revenue: $10-500M (exclude firms with revenue outside this range)
 - Specializations: Product Development, Sourcing Strategy, Supply Chain Optimization
 - Primary client base: Enterprise retailers (revenue >$500M)
 
 Research Methodology:
-- Identify 6 firms meeting all criteria
-- Cross-reference data from company websites, industry reports (e.g., Retail Dive, Consulting.us), financial databases (e.g., PitchBook), and LinkedIn
-- Validate through public records, client testimonials, and case studies; data must be confirmed by at least two credible sources listed below
+- Identify 15-30 firms meeting all criteria [NOT LESS THAN 15, THIS IS IMPORTANT]
+- Cross-reference data from company websites, industry reports (e.g., Retail Dive, Consulting.us), and LinkedIn
+- Validate through public records or client testimonials; data must be confirmed by at least two credible sources listed below
 - Exclude firms with incomplete data or revenue outside $10-20M
 
 Evaluation Criteria:
-- Financial Performance: Revenue, growth rate, profitability, valuation multiples
-- Operational Scale: Employee count, office locations
-- Client Portfolio: Key retail clients, average contract value
-- Leadership: Key executives, their expertise
-- Technology: Tools used (e.g., SAP, Tableau)
-- Merger Fit: Synergies, cultural alignment, integration challenges
+- Financial Performance: Revenue, growth rate
+- Operational Scale: Employee count
+- Client Portfolio: Key retail clients
+- Leadership: Key executives
+- Merger Fit: Synergies
 
 Output Requirements:
-- Return a JSON array of 6 firms in the following structure:
+- Return a JSON array of 15-30 firms in the following structure:
   ```json
   [
     {
@@ -247,220 +197,119 @@ Output Requirements:
       "domain_name": "<string>",
       "estimated_revenue": "<string, e.g., $15M>",
       "revenue_growth": "<string, e.g., 10% CAGR over 3 years>",
-      "profitability": "<string, e.g., 20% EBITDA margin>",
-      "valuation_estimate": "<string, e.g., $30M based on 2x revenue multiple>",
       "employee_count": "<string, e.g., 50-75 employees>",
-      "office_locations": ["<string>", ],
-      "key_clients": ["<string>", ],
-      "average_contract_value": "<string, e.g., $500K>",
+      "key_clients": ["<string>"],
       "leadership": [
         {
           "name": "<string>",
-          "title": "<string>",
-          "experience": "<string, e.g., 15 years in retail consulting>"
-        },
-        
+          "title": "<string>"
+        }
       ],
-      "primary_domains": ["<string>", ],
-      "proprietary_methodologies": "<string>",
-      "technology_tools": ["<string>", ],
-      "competitive_advantage": "<string>",
       "merger_synergies": "<string>",
-      "cultural_alignment": "<string>",
-      "integration_challenges": "<string>",
-      "market_penetration": "<string, e.g., 5% of enterprise retail consulting market>",
-      "sources": ["<string>", ]
-    },
+      "Industries": "<string>",
+      "Services": "<string>",
+      "Broad Category": "<string>",
+      "Ownership": "<string> e.g, Private, JV, Partnership, Public",
+      "sources": ["<string>"]
+    }
   ]
   ```
-- Include 2-3 credible sources per firm
-- If data is unavailable or cannot be validated by at least two sources, mark as 'Data not available' and exclude from results
-- Return JSON only, with no narrative text, explanations, or inline comments (e.g., // )
+- Include 2 credible sources per firm
+- If data is unavailable or cannot be validated by at least two sources, exclude from results
+- Return JSON only, with no narrative text or comments
 - Ensure all firms meet the $10-20M revenue criterion""",
         "sources": [
             "https://www.consulting.us/rankings/top-consulting-firms-in-the-us-by-industry-expertise/retail",
             "https://managementconsulted.com/boutique-consulting-firms-in-us/",
-            "https://www.g-co.agency/insights/best-retail-consulting-firms-to-work-with",
-            "https://www.pitchbook.com/",
             "https://www.linkedin.com/"
         ]
     },
     {
         "title": "Market Analysis and Competitive Landscape",
+        "agent-ID": "6812315c360229f1a4e77f3b",
         "content": """Analyze the competitive landscape of boutique retail consulting firms for merger potential:
 
 Target Firms:
-- Headquartered in North America
-- Annual revenue: Strictly $10-20M (exclude firms with revenue outside this range)
+- Headquartered in North America, Europe
+- Annual revenue: $10-500M (exclude firms with revenue outside this range)
 - Specializations: Product Development, Sourcing Strategy, Procurement Optimization
 - Primary client base: Enterprise retailers (revenue >$500M)
 
 Research Methodology:
-- Identify 5 firms meeting all criteria
-- Cross-reference data from industry reports (e.g., IBISWorld, Gartner), financial databases (e.g., PitchBook), company websites, and LinkedIn
-- Validate through client testimonials, press releases, and public records; data must be confirmed by at least two credible sources listed below
+- Identify 15-30 firms meeting all criteria [NOT LESS THAN 15, THIS IS IMPORTANT]
+- Cross-reference data from industry reports (e.g., IBISWorld), company websites, and LinkedIn
+- Validate through client testimonials or public records; data must be confirmed by at least two credible sources listed below
 - Exclude firms with incomplete data or revenue outside $10-20M
 
 Evaluation Criteria:
-- Financial Performance: Revenue, growth rate, profitability, valuation multiples
-- Operational Scale: Employee count, office locations
-- Client Portfolio: Key retail clients, average contract value
-- Leadership: Key executives, their expertise
-- Technology: Tools used (e.g., AI analytics, supply chain software)
-- Competitive Positioning: Market share, competitive advantages
-- Merger Fit: Synergies, cultural alignment, integration challenges
+- Financial Performance: Revenue, growth rate
+- Operational Scale: Employee count
+- Client Portfolio: Key retail clients
+- Leadership: Key executives
+- Merger Fit: Synergies
 
 Output Requirements:
-- Return a JSON object with 5 firms in the following structure:
+- Return a JSON array of 15-30 firms in the following structure:
   ```json
-  {
-    [
-      {
-        "rank": <integer>,
-        "name": "<string>",
-        "domain_name": "<string>",
-        "estimated_revenue": "<string, e.g., $15M>",
-        "revenue_growth": "<string, e.g., 10% CAGR over 3 years>",
-        "profitability": "<string, e.g., 20% EBITDA margin>",
-        "valuation_estimate": "<string, e.g., $30M based on 2x revenue multiple>",
-        "employee_count": "<string, e.g., 50-75 employees>",
-        "office_locations": ["<string>", ],
-        "key_clients": ["<string>", ],
-        "average_contract_value": "<string, e.g., $500K>",
-        "leadership": [
-          {
-            "name": "<string>",
-            "title": "<string>",
-            "experience": "<string, e.g., 15 years in retail consulting>"
-          },
-        ],
-        "primary_domains": ["<string>", ],
-        "proprietary_methodologies": "<string>",
-        "technology_tools": ["<string>", ],
-        "competitive_advantage": "<string>",
-        "merger_synergies": "<string>",
-        "cultural_alignment": "<string>",
-        "integration_challenges": "<string>",
-        "market_penetration": "<string, e.g., 5% of enterprise retail consulting market>",
-        "sources": ["<string>", ]
-      },
-    ]
-  }
+  [
+    {
+      "name": "<string>",
+      "domain_name": "<string>",
+      "estimated_revenue": "<string, e.g., $15M>",
+      "revenue_growth": "<string, e.g., 10% CAGR over 3 years>",
+      "employee_count": "<string, e.g., 50-75 employees>",
+      "key_clients": ["<string>"],
+      "leadership": [
+        {
+          "name": "<string>",
+          "title": "<string>"
+        }
+      ],
+      "merger_synergies": "<string>",
+      "Industries": "<string>",
+      "Services": "<string>",
+      "Broad Category": "<string>",
+      "Ownership": "<string> e.g, Private, JV, Partnership, Public",
+      "sources": ["<string>"]
+    }
+  ]
   ```
-- Include 2-3 credible sources per firm
-- If data is unavailable or cannot be validated by at least two sources, mark as 'Data not available' and exclude from results
-- Return JSON only, with no narrative text, explanations, or inline comments (e.g., // )
+- Include 2 credible sources per firm
+- If data is unavailable or cannot be validated by at least two sources, exclude from results
+- Return JSON only, with no narrative text or comments
 - Ensure all firms meet the $10-20M revenue criterion""",
         "sources": [
             "https://www.ibisworld.com/",
-            "https://www.gartner.com/",
-            "https://www.pitchbook.com/",
             "https://www.linkedin.com/",
             "https://www.retaildive.com/"
         ]
     },
     {
         "title": "Sourcing and Procurement Specialists",
-        "content": """Conduct a comprehensive survey of boutique procurement strategy consulting firms for merger potential:
+        "agent-ID": "6812315c360229f1a4e77f3b",
+        "content": """Conduct a survey of boutique procurement strategy consulting firms for merger potential:
 
 Target Firms:
-- Headquartered in North America
-- Annual revenue: Strictly $10-20M (exclude firms with revenue outside this range, e.g., Accenture, Deloitte)
+- Headquartered in North America, Europe
+- Annual revenue: $10-500M (exclude firms with revenue outside this range)
 - Specializations: Strategic Sourcing, Global Procurement, Retail Supply Chain Optimization
 - Primary client base: Enterprise retailers (revenue >$500M)
 
 Research Methodology:
-- Identify exactly 7 firms meeting all criteria
-- Cross-reference data from company websites, industry reports (e.g., Procurement Leaders, CIPS), financial databases (e.g., PitchBook), and LinkedIn
-- Validate through public records, client testimonials, and case studies; data must be confirmed by at least two credible sources listed below
+- Identify 15-30 firms meeting all criteria [NOT LESS THAN 15, THIS IS IMPORTANT]
+- Cross-reference data from company websites, industry reports (e.g., Procurement Leaders), and LinkedIn
+- Validate through public records or client testimonials; data must be confirmed by at least two credible sources listed below
 - Exclude firms with incomplete data or revenue outside $10-20M
 
 Evaluation Criteria:
-- Financial Performance: Revenue, growth rate, profitability, valuation multiples
-- Operational Scale: Employee count, office locations, global sourcing reach
-- Client Portfolio: Key retail clients, average contract value
-- Leadership: Key executives, their procurement expertise
-- Technology: Tools for procurement optimization (e.g., SAP Ariba, Coupa)
-- Merger Fit: Synergies, cultural alignment, integration challenges
+- Financial Performance: Revenue, growth rate
+- Operational Scale: Employee count
+- Client Portfolio: Key retail clients
+- Leadership: Key executives
+- Merger Fit: Synergies
 
 Output Requirements:
-- Return a JSON object with exactly 7 firms in the following structure:
-  ```json
-  {
-    [
-      {
-        "name": "<string>",
-        "domain_name": "<string>",
-        "estimated_revenue": "<string, e.g., $15M>",
-        "revenue_growth": "<string, e.g., 10% CAGR over 3 years>",
-        "profitability": "<string, e.g., 20% EBITDA margin>",
-        "valuation_estimate": "<string, e.g., $30M based on 2x revenue multiple>",
-        "employee_count": "<string, e.g., 50-75 employees>",
-        "office_locations": ["<string>", ],
-        "key_clients": ["<string>", ],
-        "average_contract_value": "<string, e.g., $500K>",
-        "leadership": [
-          {
-            "name": "<string>",
-            "title": "<string>",
-            "experience": "<string, e.g., 15 years in procurement>"
-          },
-        ],
-        "primary_domains": ["<string>", ],
-        "proprietary_methodologies": "<string>",
-        "technology_tools": ["<string>", ],
-        "competitive_advantage": "<string>",
-        "merger_synergies": "<string>",
-        "cultural_alignment": "<string>",
-        "integration_challenges": "<string>",
-        "market_penetration": "<string, e.g., 5% of enterprise retail consulting market>",
-        "technological_enablement_score": "<string, e.g., High, based on AI adoption>",
-        "global_sourcing_reach": "<string, e.g., Strong in Asia>",
-        "sources": ["<string>", ]
-      },
-    ]
-  }
-  ```
-- Include 2-3 credible sources per firm
-- If data is unavailable or cannot be validated by at least two sources, mark as 'Data not available' and exclude from results
-- Return JSON only, with no narrative text, explanations, or inline comments (e.g., // )
-- Ensure all firms meet the $10-20M revenue criterion""",
-        "sources": [
-            "https://www.supplychaindigital.com/technology/top-10-procurement-consulting-firms",
-            "https://www.consultancy.uk/sectors/procurement-consulting",
-            "https://www.procurementleaders.com/industry-insight/consulting-rankings",
-            "https://www.cips.org/knowledge/procurement-strategy/",
-            "https://www.supplychaindive.com/news/top-procurement-consulting-firms/",
-            "https://www.pitchbook.com/",
-            "https://www.linkedin.com/"
-        ]
-    },
-    {
-        "title": "Product Development Expertise",
-        "content": """Identify boutique retail consulting firms with expertise in product development for merger potential:
-
-Target Firms:
-- Headquartered in North America
-- Annual revenue: Strictly $10-20M (exclude firms with revenue outside this range)
-- Specializations: Concept Development, Product Optimization, Launch Strategy, Post-Launch Performance Analysis
-- Primary client base: Enterprise retailers (revenue >$500M)
-
-Research Methodology:
-- Identify 4 firms meeting all criteria
-- Cross-reference data from company websites, industry reports (e.g., Retail Dive, PDMA), financial databases (e.g., PitchBook), and LinkedIn
-- Validate through public records, client testimonials, and case studies; data must be confirmed by at least two credible sources listed below
-- Exclude firms with incomplete data or revenue outside $10-20M
-
-Evaluation Criteria:
-- Financial Performance: Revenue, growth rate, profitability, valuation multiples
-- Operational Scale: Employee count, office locations
-- Client Portfolio: Key retail clients, average contract value
-- Leadership: Key executives, their product development expertise
-- Technology: Tools used (e.g., PLM software, Tableau)
-- Merger Fit: Synergies, cultural alignment, integration challenges
-
-Output Requirements:
-- Return a JSON array of 4 firms in the following structure:
+- Return a JSON array of 15-30 firms in the following structure:
   ```json
   [
     {
@@ -468,117 +317,148 @@ Output Requirements:
       "domain_name": "<string>",
       "estimated_revenue": "<string, e.g., $15M>",
       "revenue_growth": "<string, e.g., 10% CAGR over 3 years>",
-      "profitability": "<string, e.g., 20% EBITDA margin>",
-      "valuation_estimate": "<string, e.g., $30M based on 2x revenue multiple>",
       "employee_count": "<string, e.g., 50-75 employees>",
-      "office_locations": ["<string>", ],
-      "key_clients": ["<string>", ],
-      "average_contract_value": "<string, e.g., $500K>",
+      "key_clients": ["<string>"],
       "leadership": [
         {
           "name": "<string>",
-          "title": "<string>",
-          "experience": "<string, e.g., 15 years in product development>"
-        },
+          "title": "<string>"
+        }
       ],
-      "primary_domains": ["<string>", ],
-      "proprietary_methodologies": "<string>",
-      "technology_tools": ["<string>", ],
-      "competitive_advantage": "<string>",
       "merger_synergies": "<string>",
-      "cultural_alignment": "<string>",
-      "integration_challenges": "<string>",
-      "market_penetration": "<string, e.g., 5% of enterprise retail consulting market>",
-      "innovation_metrics": "<string, e.g., 80% launch success rate>",
-      "sources": ["<string>", ]
-    },
-    
+      "Industries": "<string>",
+      "Services": "<string>",
+      "Broad Category": "<string>",
+      "Ownership": "<string> e.g, Private, JV, Partnership, Public",
+      "sources": ["<string>"]
+    }
   ]
   ```
-- Include 2-3 credible sources per firm
-- If data is unavailable or cannot be validated by at least two sources, mark as 'Data not available' and exclude from results
-- Return JSON only, with no narrative text, explanations, or inline comments (e.g., // )
+- Include 2 credible sources per firm
+- If data is unavailable or cannot be validated by at least two sources, exclude from results
+- Return JSON only, with no narrative text or comments
+- Ensure all firms meet the $10-20M revenue criterion""",
+        "sources": [
+            "https://www.procurementleaders.com/industry-insight/consulting-rankings",
+            "https://www.linkedin.com/"
+        ]
+    },
+    {
+        "title": "Product Development Expertise",
+        "agent-ID": "6812315c360229f1a4e77f3b",
+        "content": """Identify boutique retail consulting firms with expertise in product development for merger potential:
+
+Target Firms:
+- Headquartered in North America, Europe
+- Annual revenue: $10-500M (exclude firms with revenue outside this range)
+- Specializations: Concept Development, Product Optimization, Launch Strategy
+- Primary client base: Enterprise retailers (revenue >$500M)
+
+Research Methodology:
+- Identify 15-30 firms meeting all criteria [NOT LESS THAN 15, THIS IS IMPORTANT]
+- Cross-reference data from company websites, industry reports (e.g., Retail Dive), and LinkedIn
+- Validate through public records or client testimonials; data must be confirmed by at least two credible sources listed below
+- Exclude firms with incomplete data or revenue outside $10-20M
+
+Evaluation Criteria:
+- Financial Performance: Revenue, growth rate
+- Operational Scale: Employee count
+- Client Portfolio: Key retail clients
+- Leadership: Key executives
+- Merger Fit: Synergies
+
+Output Requirements:
+- Return a JSON array of 15-30 firms in the following structure:
+  ```json
+  [
+    {
+      "name": "<string>",
+      "domain_name": "<string>",
+      "estimated_revenue": "<string, e.g., $15M>",
+      "revenue_growth": "<string, e.g., 10% CAGR over 3 years>",
+      "employee_count": "<string, e.g., 50-75 employees>",
+      "key_clients": ["<string>"],
+      "leadership": [
+        {
+          "name": "<string>",
+          "title": "<string>"
+        }
+      ],
+      "merger_synergies": "<string>",
+      "Industries": "<string>",
+      "Services": "<string>",
+      "Broad Category": "<string>",
+      "Ownership": "<string> e.g, Private, JV, Partnership, Public",
+      "sources": ["<string>"]
+    }
+  ]
+  ```
+- Include 2 credible sources per firm
+- If data is unavailable or cannot be validated by at least two sources, exclude from results
+- Return JSON only, with no narrative text or comments
 - Ensure all firms meet the $10-20M revenue criterion""",
         "sources": [
             "https://www.retaildive.com/",
-            "https://www.pdma.org/",
-            "https://www.pitchbook.com/",
-            "https://www.linkedin.com/",
-            "https://www.g-co.agency/insights/best-retail-consulting-firms-to-work-with"
+            "https://www.linkedin.com/"
         ]
     },
     {
         "title": "Supply Chain Specialists",
+        "agent-ID": "6812315c360229f1a4e77f3b",
         "content": """Identify boutique retail consulting firms with expertise in supply chain optimization for merger potential:
 
 Target Firms:
-- Headquartered in North America
-- Annual revenue: Strictly $10-20M (exclude firms with revenue outside this range)
-- Specializations: Supply Chain Optimization, Vendor Assessment/Evaluation, Digital Supply Chain Transformation
+- Headquartered in North America, Europe
+- Annual revenue: $10-500M (exclude firms with revenue outside this range)
+- Specializations: Supply Chain Optimization, Vendor Assessment/Evaluation
 - Primary client base: Enterprise retailers (revenue >$500M)
 
 Research Methodology:
-- Identify 4 firms meeting all criteria
-- Cross-reference data from company websites, industry reports (e.g., Gartner, Supply Chain Dive), financial databases (e.g., PitchBook), and LinkedIn
-- Validate through public records, client testimonials, and case studies; data must be confirmed by at least two credible sources listed below
+- Identify 15-30 firms meeting all criteria [NOT LESS THAN 15, THIS IS IMPORTANT]
+- Cross-reference data from company websites, industry reports (e.g., Supply Chain Dive), and LinkedIn
+- Validate through public records or client testimonials; data must be confirmed by at least two credible sources listed below
 - Exclude firms with incomplete data or revenue outside $10-20M
 
 Evaluation Criteria:
-- Financial Performance: Revenue, growth rate, profitability, valuation multiples
-- Operational Scale: Employee count, office locations
-- Client Portfolio: Key retail clients, average contract value
-- Leadership: Key executives, their supply chain expertise
-- Technology: Tools used (e.g., Blue Yonder, Kinaxis)
-- Merger Fit: Synergies, cultural alignment, integration challenges
+- Financial Performance: Revenue, growth rate
+- Operational Scale: Employee count
+- Client Portfolio: Key retail clients
+- Leadership: Key executives
+- Merger Fit: Synergies
 
 Output Requirements:
-- Return a JSON object with 4 firms in the following structure:
+- Return a JSON array of 15-30 firms in the following structure:
   ```json
-  {
-    [
-      {
-        "name": "<string>",
-        "domain_name": "<string>",
-        "estimated_revenue": "<string, e.g., $15M>",
-        "revenue_growth": "<string, e.g., 10% CAGR over 3 years>",
-        "profitability": "<string, e.g., 20% EBITDA margin>",
-        "valuation_estimate": "<string, e.g., $30M based on 2x revenue multiple>",
-        "employee_count": "<string, e.g., 50-75 employees>",
-        "office_locations": ["<string>", ],
-        "key_clients": ["<string>", ],
-        "average_contract_value": "<string, e.g., $500K>",
-        "leadership": [
-          {
-            "name": "<string>",
-            "title": "<string>",
-            "experience": "<string, e.g., 15 years in supply chain>"
-          },
-        ],
-        "primary_domains": ["<string>", ],
-        "proprietary_methodologies": "<string>",
-        "technology_tools": ["<string>", ],
-        "competitive_advantage": "<string>",
-        "merger_synergies": "<string>",
-        "cultural_alignment": "<string>",
-        "integration_challenges": "<string>",
-        "market_penetration": "<string, e.g., 5% of enterprise retail consulting market>",
-        "digital_transformation_score": "<string, e.g., High, based on AI adoption>",
-        "sustainability_performance": "<string, e.g., 30% reduction in carbon footprint>",
-        "sources": ["<string>", ]
-      },
-    ]
-  }
+  [
+    {
+      "name": "<string>",
+      "domain_name": "<string>",
+      "estimated_revenue": "<string, e.g., $15M>",
+      "revenue_growth": "<string, e.g., 10% CAGR over 3 years>",
+      "employee_count": "<string, e.g., 50-75 employees>",
+      "key_clients": ["<string>"],
+      "leadership": [
+        {
+          "name": "<string>",
+          "title": "<string>"
+        }
+      ],
+      "merger_synergies": "<string>",
+      "Industries": "<string>",
+      "Services": "<string>",
+      "Broad Category": "<string>",
+      "Ownership": "<string> e.g, Private, JV, Partnership, Public",
+      "sources": ["<string>"]
+    }
+  ]
   ```
-- Include 2-3 credible sources per firm
-- If data is unavailable or cannot be validated by at least two sources, mark as 'Data not available' and exclude from results
-- Return JSON only, with no narrative text, explanations, or inline comments (e.g., // )
+- Include 2 credible sources per firm
+- If data is unavailable or cannot be validated by at least two sources, exclude from results
+- Return JSON only, with no narrative text or comments
 - Ensure all firms meet the $10-20M revenue criterion""",
         "sources": [
-            "https://www.gartner.com/",
             "https://www.supplychaindive.com/",
-            "https://www.pitchbook.com/",
-            "https://www.linkedin.com/",
-            "https://www.walmartlogisticsreport.com/"
+            "https://www.linkedin.com/"
         ]
     }
 ]
@@ -601,8 +481,13 @@ class MergerSearchResponse(BaseModel):
 class EnrichCompanyRequest(BaseModel):
     company_domain: str
 
+class FetchCompanyPerplexityRequest(BaseModel):
+    company_name: str
+    company_domain: str
+
 # Apollo API enrichment function
-async def enrich_company(company_domain: str):
+@async_retry(max_attempts=3, delay=2.0)
+async def enrich_company(company_domain: str) -> Dict:
     async with httpx.AsyncClient() as client:
         try:
             response = await client.get(
@@ -611,75 +496,18 @@ async def enrich_company(company_domain: str):
                 headers={"x-api-key": APOLLO_API_KEY}
             )
             response.raise_for_status()
-            return response.json()
+            data = response.json()
+            org = data.get("organization", {})
+            if not org:
+                logger.warning(f"No organization data returned for domain {company_domain}")
+                return {"error": "No organization data found"}
+            return org  # Return the full organization object
         except Exception as e:
-            logger.error(f"Apollo API error: {str(e)}")
+            logger.error(f"Apollo API error for domain {company_domain}: {str(e)}")
             return {"error": str(e)}
+        
 
-# Validate and update company data with Apollo API
-def validate_company_data(perplexity_data: Dict, apollo_data: Dict) -> Dict:
-    validated = perplexity_data.copy()
-    validation_warnings = []
-
-    # Update revenue
-    if apollo_data.get("annual_revenue_printed"):
-        apollo_revenue = apollo_data["annual_revenue_printed"]
-        perplexity_revenue = perplexity_data.get("estimated_revenue", "")
-        try:
-            apollo_revenue_val = float(apollo_revenue.replace("$", "").replace("M", ""))
-            perplexity_revenue_val = float(perplexity_revenue.replace("$", "").replace("M", ""))
-            if abs(apollo_revenue_val - perplexity_revenue_val) > 5:
-                validation_warnings.append(
-                    f"Revenue discrepancy: Perplexity={perplexity_revenue}, Apollo={apollo_revenue}"
-                )
-            validated["estimated_revenue"] = f"${apollo_revenue_val}M"
-        except (ValueError, TypeError):
-            validation_warnings.append(
-                f"Invalid revenue format: Perplexity={perplexity_revenue}, Apollo={apollo_revenue}"
-            )
-
-    # Update employee count
-    if apollo_data.get("estimated_num_employees"):
-        apollo_employees = apollo_data["estimated_num_employees"]
-        perplexity_employees = perplexity_data.get("employee_count", "")
-        try:
-            apollo_count = int(apollo_employees)
-            perplexity_count = int(perplexity_employees.split("-")[0].replace("employees", "").strip()) if "-" in perplexity_employees else int(perplexity_employees.replace("employees", "").strip())
-            if abs(apollo_count - perplexity_count) > 20:
-                validation_warnings.append(
-                    f"Employee count discrepancy: Perplexity={perplexity_employees}, Apollo={apollo_employees}"
-                )
-            validated["employee_count"] = f"{apollo_employees} employees"
-        except (ValueError, TypeError):
-            validation_warnings.append(
-                f"Invalid employee count format: Perplexity={perplexity_employees}, Apollo={apollo_employees}"
-            )
-
-    # Update office locations
-    if apollo_data.get("city") and apollo_data.get("state"):
-        apollo_location = f"{apollo_data['city']}, {apollo_data['state']}"
-        perplexity_locations = perplexity_data.get("office_locations", [])
-        if apollo_location not in perplexity_locations:
-            validation_warnings.append(
-                f"Location discrepancy: Perplexity={perplexity_locations}, Apollo={apollo_location}"
-            )
-            validated["office_locations"] = [apollo_location] + perplexity_locations
-
-    # Update technology tools
-    if apollo_data.get("technology_names"):
-        apollo_tech = apollo_data["technology_names"]
-        perplexity_tech = perplexity_data.get("technology_tools", [])
-        validated["technology_tools"] = list(set(apollo_tech + perplexity_tech))
-
-    # Update primary domains
-    if apollo_data.get("keywords"):
-        apollo_domains = [kw for kw in apollo_data["keywords"] if kw in perplexity_data.get("primary_domains", [])]
-        validated["primary_domains"] = list(set(apollo_domains + perplexity_data.get("primary_domains", [])))
-
-    validated["validation_warnings"] = validation_warnings
-    return validated
-
-# API Functions
+# Lyzr agent query function
 @async_retry(max_attempts=3, delay=2.0)
 async def query_lyzr_agent(agent_id: str, session_id: str, prompt: str) -> Optional[Dict]:
     payload = {
@@ -697,18 +525,20 @@ async def query_lyzr_agent(agent_id: str, session_id: str, prompt: str) -> Optio
         response.raise_for_status()
         json_response = response.json()
         raw_response = json_response.get("response", "{}")
-        print("response",response.json())
         logger.info(f"API response size: {len(str(json_response))} bytes")
         json_response["response"] = sanitize_json_string(raw_response)
+        print("RESPONSE",json_response)
         return json_response
     except Exception as e:
         logger.error(f"Lyzr agent API error: {e}")
         raise
 
+async def query_perplexity(prompt: str, agent_id: str) -> Optional[Dict]:
+    return await query_lyzr_agent(agent_id, LYZR_PERPLEXITY_SESSION_ID, prompt)
 
 async def process_prompt_batch(prompt_data: Dict) -> Dict:
     try:
-        response = await query_perplexity(prompt_data['content'])
+        response = await query_perplexity(prompt_data['content'], prompt_data['agent-ID'])
         if not response:
             return {"error": "API request failed", "title": prompt_data['title']}
 
@@ -728,17 +558,8 @@ async def process_prompt_batch(prompt_data: Dict) -> Dict:
             "validation_warnings": [f"Processing error: {str(e)}"]
         }
 
-
-async def query_perplexity(prompt: str) -> Optional[Dict]:
-    return await query_lyzr_agent(LYZR_PERPLEXITY_AGENT_ID, LYZR_PERPLEXITY_SESSION_ID, prompt)
-
-async def query_claude(prompt: str) -> Optional[Dict]:
-    return await query_lyzr_agent(LYZR_CLAUDE_AGENT_ID, LYZR_CLAUDE_SESSION_ID, prompt)
-
 def extract_companies(json_content: any) -> List[str]:
-    """Deep search for company data in complex JSON structures"""
     companies = []
-    
     def recursive_search(node):
         if isinstance(node, dict):
             if 'name' in node and isinstance(node['name'], str):
@@ -748,7 +569,6 @@ def extract_companies(json_content: any) -> List[str]:
         elif isinstance(node, list):
             for item in node:
                 recursive_search(item)
-    
     try:
         recursive_search(json_content)
         return sorted(list(set(filter(None, companies))))
@@ -759,8 +579,6 @@ def extract_companies(json_content: any) -> List[str]:
 async def analyze_with_claude(companies: List[str], raw_responses: Dict[str, str]) -> Optional[Dict]:
     full_context = "\n\n".join([f"### {title}\n{content}" for title, content in raw_responses.items()])
     company_list = "\n".join([f"- {company}" for company in companies])
-    print("Full context", full_context)
-    print("company list", company_list)
     analysis_prompt = """
 Analyze the provided list of boutique retail consulting firms for merger potential based on the following criteria weightings:
 - Financial Health (30%): Revenue, growth rate, profitability, valuation multiples
@@ -772,18 +590,6 @@ Analyze the provided list of boutique retail consulting firms for merger potenti
 Input Data:
 - Companies: {company_list}
 - Detailed Data: {full_context}
-
-Analysis Methodology:
-1. Financial Health: Calculate weighted scores based on revenue CAGR, EBITDA margins, and valuation multiples
-2. Strategic Fit: Evaluate service complementarity, client overlap, and market penetration
-3. Operational Compatibility: Assess office locations, employee scale, and technology alignment
-4. Leadership and Innovation: Review leadership experience, proprietary methodologies, and innovation metrics
-5. Cultural and Integration Risks: Analyze cultural alignment and potential integration challenges
-
-Constraints:
-- Only analyze the companies explicitly listed in the provided company_list
-- Do not include or evaluate any companies not present in the company_list
-- If a company in the company_list lacks sufficient data, include it in the output with scores based on available data or reasonable estimates, noting assumptions in the rationale
 
 Output Requirements:
 - Return a JSON object with the following structure:
@@ -799,33 +605,25 @@ Output Requirements:
           "operational_compatibility_score": <float, 0-100>,
           "leadership_innovation_score": <float, 0-100>,
           "cultural_integration_score": <float, 0-100>,
-          "rationale": "<string, brief explanation of ranking, including any assumptions for missing data>"
+          "rationale": "<string>"
         }
       ],
       "recommendations": [
         {
           "name": "<string>",
-          "merger_potential": "<string, e.g., High/Medium/Low>",
+          "merger_potential": "<string>",
           "key_synergies": ["<string>"],
           "potential_risks": ["<string>"]
         }
       ],
-      "summary": "<string, 2-3 sentences summarizing the analysis of the provided companies>"
+      "summary": "<string>"
     }
   }
   ```
-- Include only the companies from the provided company_list in the rankings and recommendations
-- Rank all provided firms based on weighted scores
-- Provide actionable recommendations for each listed firm
-- Include a concise summary of findings focused on the listed companies
-- Return JSON only, with no narrative text, explanations, or inline comments
-- If data is missing for a listed company, use reasonable estimates and note assumptions in the rationale
-- Ensure the company_list is populated with valid company names before analysis
-- Validate that full_context contains sufficient data for analysis, and handle empty or malformed inputs gracefully
+- Include only the companies from the provided company_list
+- Return JSON only, with no narrative text
 """
-
-    print("Prompt", analysis_prompt)
-    response = await query_claude(analysis_prompt+""+company_list+""+full_context)
+    response = await query_perplexity(analysis_prompt.format(company_list=company_list, full_context=full_context), "6817b49c2f31429a00a39d39")  # Using first agent-ID for Claude
     if response:
         try:
             json_content = json.loads(sanitize_json_string(response.get("response", "{}")))
@@ -835,38 +633,14 @@ Output Requirements:
             return {}
     return {}
 
-
-# API Endpoints
-@app.get("/prompts", summary="List Available Prompts", description="Returns the list of available search prompts.")
-async def list_prompts() -> List[Dict]:
-    return [{"index": i, "title": p["title"]} for i, p in enumerate(search_prompts)]
-
-@app.post("/run_prompt")
-async def run_prompt(request: PromptRequest) -> Dict:
-    try:
-        prompt_data = search_prompts[request.prompt_index]
-    except IndexError:
-        raise HTTPException(status_code=400, detail="Invalid prompt index")
-    
-    response = await query_perplexity(prompt_data['content'])
-    if not response:
-        raise HTTPException(status_code=500, detail="API request failed")
-
-    processed = await process_api_response(response, prompt_data)
-    return processed
-
 async def process_api_response(response: Dict, prompt_data: Dict) -> Dict:
-    """Process Perplexity response and validate with Apollo API"""
     raw_content = response.get('response', '')
-    
-    # Forensic logging for Perplexity response
     logger.debug(f"Raw Perplexity API response:\n{raw_content[:2000]}")
     Path("api_logs").mkdir(exist_ok=True)
     log_file = f"api_logs/{time.time()}.json"
     with open(log_file, "w") as f:
         f.write(raw_content)
     
-    # Sanitize and parse response
     sanitized = sanitize_json_string(raw_content)
     try:
         json_content = json.loads(sanitized)
@@ -882,19 +656,16 @@ async def process_api_response(response: Dict, prompt_data: Dict) -> Dict:
             "validation_warnings": ["Invalid JSON response"]
         }
     
-    # Validate company data
     validated_companies = []
     validation_warnings = []
     for company in json_content if isinstance(json_content, list) else []:
         if not isinstance(company, dict):
             continue
-        # Check required fields
-        required_fields = ["name", "domain_name", "estimated_revenue", "employee_count", "office_locations"]
+        required_fields = ["name", "domain_name", "estimated_revenue", "employee_count"]
         missing_fields = [field for field in required_fields if not company.get(field)]
         if missing_fields:
             validation_warnings.append(f"Company {company.get('name', 'unknown')} missing fields: {missing_fields}")
             continue
-        # Validate revenue range ($10-20M)
         revenue_str = company.get("estimated_revenue", "")
         try:
             revenue = float(revenue_str.replace("$", "").replace("M", ""))
@@ -905,20 +676,20 @@ async def process_api_response(response: Dict, prompt_data: Dict) -> Dict:
             validation_warnings.append(f"Invalid revenue format for {company['name']}: {revenue_str}")
             continue
 
-        # Validate with Apollo API
         logger.info(f"Fetching Apollo data for {company['name']} with domain {company['domain_name']}")
-        await asyncio.sleep(0.5)  # Non-blocking sleep to avoid Apollo rate limiting
+        await asyncio.sleep(0.5)
         apollo_data = await enrich_company(company.get("domain_name"))
         if "error" not in apollo_data:
             validated_company = validate_company_data(company, apollo_data)
             validated_companies.append(validated_company)
             validation_warnings.extend(validated_company.get("validation_warnings", []))
         else:
+            validated_company = company.copy()
+            validated_company["validation_warnings"] = [f"Apollo API failed: {apollo_data['error']}"]
+            validated_companies.append(validated_company)
             validation_warnings.append(f"Apollo API failed for {company['name']}: {apollo_data['error']}")
 
-    # Extract company names
     companies = [company["name"] for company in validated_companies]
-
     return {
         "title": prompt_data["title"],
         "response": validated_companies,
@@ -927,10 +698,38 @@ async def process_api_response(response: Dict, prompt_data: Dict) -> Dict:
         "validation_warnings": validation_warnings
     }
 
+def validate_company_data(perplexity_data: Dict, apollo_data: Dict) -> Dict:
+    validated = perplexity_data.copy()
+    validation_warnings = []
+
+    if apollo_data.get("estimated_num_employees"):
+        apollo_employees = apollo_data["estimated_num_employees"]
+        try:
+            apollo_count = int(apollo_employees)
+            validated["employee_count"] = f"{apollo_count} employees"
+        except (ValueError, TypeError):
+            validation_warnings.append(f"Invalid Apollo employee count: {apollo_employees}")
+    else:
+        validation_warnings.append("Apollo data missing employee count")
+
+    city = apollo_data.get("city", "")
+    state = apollo_data.get("state", "")
+    country = apollo_data.get("country", "")
+    if city and state and country:
+        validated["office_locations"] = [f"{city}, {state}, {country}"]
+    elif city or state or country:
+        # Include partial location if some fields are present
+        location_parts = [part for part in [city, state, country] if part]
+        validated["office_locations"] = [", ".join(location_parts)]
+    else:
+        validated["office_locations"] = []
+        validation_warnings.append("Apollo data missing complete location information")
+
+    validated["validation_warnings"] = validation_warnings
+    return validated
+
 def diagnose_json_issues(json_str: str) -> Dict:
-    """Detailed JSON diagnostics"""
     diagnosis = {"unclosed_constructs": [], "string_issues": []}
-    
     stack = []
     for i, c in enumerate(json_str):
         if c in '{[':
@@ -964,6 +763,43 @@ def diagnose_json_issues(json_str: str) -> Dict:
     
     return diagnosis
 
+# API Endpoints
+@app.get("/prompts", summary="List Available Prompts", description="Returns the list of available search prompts.")
+async def list_prompts() -> List[Dict]:
+    return [{"index": i, "title": p["title"]} for i, p in enumerate(search_prompts)]
+
+@app.post("/run_prompt", summary="Run a Specific Prompt", description="Runs a specific prompt by index and returns processed results.")
+async def run_prompt(request: PromptRequest) -> Dict:
+    try:
+        prompt_data = search_prompts[request.prompt_index]
+    except IndexError:
+        raise HTTPException(status_code=400, detail="Invalid prompt index")
+    
+    response = await query_perplexity(prompt_data['content'], prompt_data['agent-ID'])
+    if not response:
+        raise HTTPException(status_code=500, detail="API request failed")
+
+    processed = await process_api_response(response, prompt_data)
+    
+    # Save or update results in merger_search_results.json
+    result_file = Path("merger_search_results.json")
+    existing_results = {}
+    if result_file.exists():
+        with open(result_file, 'r') as f:
+            existing_results = json.load(f)
+    
+    # Update results for this prompt
+    existing_results[prompt_data['title']] = {
+        "raw_response": processed.get("response", []),
+        "extracted_companies": processed.get("companies", []),
+        "validation_warnings": processed.get("validation_warnings", [])
+    }
+    
+    # Save updated results
+    await save_to_json(existing_results)
+    
+    return processed
+
 @app.post("/extract_companies", summary="Extract Companies from Response", description="Extracts company names from a given JSON response content.")
 async def extract_companies_endpoint(content: str) -> CompaniesResponse:
     try:
@@ -983,13 +819,9 @@ async def analyze_companies(request: AnalysisRequest) -> Dict:
 
 @app.post("/run_merger_search", summary="Run Full Merger Search", description="Executes the full merger search process, including running all prompts, extracting companies, saving results, and analyzing with Claude via Lyzr agent API, returning all responses as JSON objects.")
 async def run_merger_search_endpoint() -> MergerSearchResponse:
-    # Create processing tasks for all prompts
     batch_tasks = [process_prompt_batch(p) for p in search_prompts]
-    
-    # Run all prompts in parallel
     batch_results = await asyncio.gather(*batch_tasks)
 
-    # Process results
     results = {}
     all_companies = []
     raw_responses = {}
@@ -998,7 +830,6 @@ async def run_merger_search_endpoint() -> MergerSearchResponse:
         if "error" in result:
             logger.error(f"Failed batch item: {result['title']}")
             continue
-            
         key = result["title"]
         results[key] = {
             "raw_response": result["response"],
@@ -1008,17 +839,13 @@ async def run_merger_search_endpoint() -> MergerSearchResponse:
         all_companies.extend(result["companies"])
         raw_responses[key] = json.dumps(result["response"], indent=2)
 
-    # Deduplicate companies
     all_companies = sorted(list(set(all_companies)))
-
-    # Save results concurrently
     io_tasks = [
         save_to_csv(all_companies),
         save_to_json(results)
     ]
     await asyncio.gather(*io_tasks)
 
-    # Parallel analysis
     analysis_task = analyze_with_claude(all_companies, raw_responses)
     claude_analysis = await analysis_task
 
@@ -1027,11 +854,32 @@ async def run_merger_search_endpoint() -> MergerSearchResponse:
         message="Merger search completed with parallel processing"
     )
 
+@app.post("/redo_search", summary="Redo Merger Search", description="Re-runs the full merger search process, overwriting existing results.")
+async def redo_search_endpoint() -> MergerSearchResponse:
+    # Clear existing files if they exist
+    csv_file = Path("identified_companies.csv")
+    json_file = Path("merger_search_results.json")
+    if csv_file.exists():
+        csv_file.unlink()
+    if json_file.exists():
+        json_file.unlink()
+
+    # Run the full merger search
+    return await run_merger_search_endpoint()
+
+@app.get("/fetch_existing_items", summary="Fetch Existing Items", description="Retrieves the existing merger search results from the JSON file, if available.")
+async def fetch_existing_items() -> Dict:
+    result_file = Path("merger_search_results.json")
+    if not result_file.exists():
+        return {"results": {}, "message": "No existing results found"}
+    with open(result_file, 'r') as f:
+        results = json.load(f)
+    return {"results": results, "message": "Successfully retrieved existing results"}
 
 async def save_to_csv(companies: List[str]):
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(
-        None, 
+        None,
         lambda: pd.DataFrame({"Company": companies}).to_csv("identified_companies.csv", index=False)
     )
 
@@ -1065,14 +913,156 @@ async def download_json() -> FileResponse:
         raise HTTPException(status_code=404, detail="JSON file not found")
     return FileResponse(json_file, filename="merger_search_results.json")
 
-@app.post("/enrich_company", summary="Enrich Company Details", description="Enriches company details using the Apollo API, given a company domain (e.g., clarkstonconsulting.com). Logs the response to apollo_enrich.log.")
+@app.post("/enrich_company", summary="Enrich Company Details", description="Enriches company details using the Apollo API, given a company domain.")
 async def enrich_company_endpoint(request: EnrichCompanyRequest) -> Dict:
     if not request.company_domain.strip():
         raise HTTPException(status_code=400, detail="Company domain cannot be empty")
-    result = enrich_company(request.company_domain)
+    result = await enrich_company(request.company_domain)
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
     return result
+
+# Fetch Company Details from Apollo
+# Fetch Company Details from Apollo
+@app.post("/fetch_company_apollo", summary="Fetch Company Details from Apollo", description="Fetches detailed company information from Apollo API for merger and acquisition analysis, given a company domain.")
+async def fetch_company_apollo(request: EnrichCompanyRequest) -> Dict:
+    if not request.company_domain.strip():
+        raise HTTPException(status_code=400, detail="Company domain cannot be empty")
+    
+    result = await enrich_company(request.company_domain)
+    if result is None:
+        logger.error(f"Apollo API returned None for domain {request.company_domain}")
+        raise HTTPException(status_code=500, detail="Apollo API returned invalid response")
+    
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=f"Apollo API error: {result['error']}")
+    
+    Path("api_logs").mkdir(exist_ok=True)
+    with open("api_logs/apollo_enrich.log", "a") as f:
+        f.write(f"{time.time()}: {json.dumps(result, indent=2)}\n")
+    
+    return {
+        "company": result,
+        "message": f"Successfully retrieved Apollo data for {request.company_domain}"
+    }
+
+@app.post("/fetch_company_perplexity", summary="Fetch Company Details from Perplexity via Lyzr", description="Fetches detailed company information from Perplexity via Lyzr agent for merger and acquisition analysis, given a company name and domain.")
+async def fetch_company_perplexity(request: FetchCompanyPerplexityRequest) -> Dict:
+    if not request.company_name.strip() or not request.company_domain.strip():
+        raise HTTPException(status_code=400, detail="Company name and domain cannot be empty")
+    
+    prompt = f"""
+Provide detailed information about the retail consulting firm {request.company_name} ({request.company_domain}) for merger and acquisition analysis:
+
+Target Firm:
+- Must be headquartered in North America
+- Annual revenue: Strictly $10-20M (exclude if outside this range)
+- Specializations: Must include Product Development, Sourcing Strategy, or Supply Chain Optimization
+- Primary client base: Enterprise retailers with revenue >$500M (e.g., Walmart, Target)
+
+Research Methodology:
+- Source data from the company website ({request.company_domain}), industry reports (e.g., IBISWorld, Retail Dive), and LinkedIn profiles
+- Validate all data with at least two credible sources (e.g., company website, SEC filings, LinkedIn, industry reports)
+- Exclude if data is incomplete, unvalidated, or if the firm does not meet all criteria (revenue, headquarters, specializations, client base)
+
+Evaluation Criteria:
+- Financial Performance: Provide estimated revenue and growth rate (e.g., CAGR over 3 years)
+- Operational Scale: Provide employee count as a range (e.g., 50-75 employees)
+- Client Portfolio: List key retail clients (must be enterprise retailers with revenue >$500M, validated by testimonials or public records)
+- Leadership: Identify key executives with names and titles
+- Merger Fit: Describe synergies (strategic, operational, cultural) with a hypothetical retail consulting acquirer
+
+Output Requirements:
+- Return a JSON object with the following structure:
+  ```json
+  {{
+    "name": "<string>",
+    "domain_name": "<string>",
+    "estimated_revenue": "<string, e.g., $15M>",
+    "revenue_growth": "<string, e.g., 10% CAGR over 3 years>",
+    "employee_count": "<string, e.g., 50-75 employees>",
+    "key_clients": ["<string>"],
+    "leadership": [
+      {{
+        "name": "<string>",
+        "title": "<string>"
+      }}
+    ],
+    "merger_synergies": "<string>",
+    "Industries": "<string>",
+    "Services": "<string>",
+    "Broad Category": "<string>",
+    "Ownership": "<string> e.g., Private, JV, Partnership, Public",
+    "sources": ["<string>"]
+  }}
+  ```
+- Include at least 2 credible sources (e.g., company website, LinkedIn, industry reports)
+- Return JSON only, with no narrative text or comments
+- Return an empty object {{}} if data is unavailable, cannot be validated by at least two sources, or if the firm does not meet all criteria
+"""
+    response = await query_perplexity(prompt, "6817b49c2f31429a00a39d39")  # Using first agent-ID
+    if not response:
+        raise HTTPException(status_code=500, detail="Perplexity API request failed")
+    
+    raw_content = response.get('response', '')
+    logger.debug(f"Raw Perplexity API response for {request.company_name}:\n{raw_content[:2000]}")
+    Path("api_logs").mkdir(exist_ok=True)
+    log_file = f"api_logs/perplexity_{time.time()}.json"
+    with open(log_file, "w") as f:
+        f.write(raw_content)
+    
+    sanitized = sanitize_json_string(raw_content)
+    try:
+        json_content = json.loads(sanitized)
+    except json.JSONDecodeError as e:
+        logger.error(f"Critical JSON failure for {request.company_name}: {e}")
+        return {
+            "company": {},
+            "message": "Failed to parse Perplexity response",
+            "validation_warnings": [f"Invalid JSON response: {str(e)}"]
+        }
+    
+    company_data = json_content if isinstance(json_content, dict) else {}
+    validation_warnings = []
+    
+    if not company_data:
+        validation_warnings.append(f"No valid data returned for {request.company_name}")
+    else:
+        required_fields = ["name", "domain_name", "estimated_revenue", "employee_count", "sources"]
+        missing_fields = [field for field in required_fields if not company_data.get(field)]
+        if missing_fields:
+            validation_warnings.append(f"Company {request.company_name} missing fields: {missing_fields}")
+            company_data = {}
+        else:
+            revenue_str = company_data.get("estimated_revenue", "")
+            try:
+                revenue = float(revenue_str.replace("$", "").replace("M", ""))
+                if not (10 <= revenue <= 20):
+                    validation_warnings.append(f"Company {request.company_name} revenue {revenue}M outside $10-20M range")
+                    company_data = {}
+            except (ValueError, TypeError):
+                validation_warnings.append(f"Invalid revenue format for {request.company_name}: {revenue_str}")
+                company_data = {}
+            if len(company_data.get("sources", [])) < 2:
+                validation_warnings.append(f"Company {request.company_name} has fewer than 2 credible sources")
+                company_data = {}
+    
+    if company_data:
+        logger.info(f"Fetching Apollo data for {request.company_name} with domain {request.company_domain}")
+        await asyncio.sleep(0.5)
+        apollo_data = await enrich_company(request.company_domain)
+        if "error" not in apollo_data:
+            company_data = validate_company_data(company_data, apollo_data)
+            validation_warnings.extend(company_data.get("validation_warnings", []))
+        else:
+            company_data["validation_warnings"] = [f"Apollo API failed: {apollo_data['error']}"]
+            validation_warnings.append(f"Apollo API failed for {request.company_name}: {apollo_data['error']}")
+    
+    return {
+        "company": company_data,
+        "message": f"Successfully retrieved Perplexity data for {request.company_name}" if company_data else f"No valid data for {request.company_name}",
+        "validation_warnings": validation_warnings
+    }
 
 @app.get('/health', summary="Health Check", description="Checks the health status of the API.")
 async def health_check():
