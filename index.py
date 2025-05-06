@@ -23,7 +23,7 @@ load_dotenv()
 # Initialize FastAPI app
 app = FastAPI(
     title="Merger Search API",
-    description="API for identifying and analyzing retail consulting firms for potential mergers, using Lyzr agent API with structured JSON responses. Configuration is managed via environment variables in a .env file.",
+    description="API for identifying and analyzing retail consulting firms for potential mergers, using Perplexity API with structured JSON responses. Configuration is managed via environment variables in a .env file.",
     version="1.0.0"
 )
 
@@ -42,19 +42,12 @@ logger = logging.getLogger(__name__)
 
 async_client = httpx.AsyncClient(timeout=90.0)
 
-# Load Lyzr agent API settings from environment variables
-LYZR_AGENT_URL = os.getenv("LYZR_AGENT_URL")
-LYZR_API_KEY = os.getenv("LYZR_API_KEY")
-LYZR_USER_ID = os.getenv("LYZR_USER_ID")
-LYZR_PERPLEXITY_SESSION_ID = os.getenv("LYZR_PERPLEXITY_SESSION_ID")
+# Load Perplexity API settings
+PERPLEXITY_API_KEY = "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"
 APOLLO_API_KEY = os.getenv("APOLLO_API_KEY")
 
 # Validate required environment variables
 required_env_vars = {
-    "LYZR_AGENT_URL": LYZR_AGENT_URL,
-    "LYZR_API_KEY": LYZR_API_KEY,
-    "LYZR_USER_ID": LYZR_USER_ID,
-    "LYZR_PERPLEXITY_SESSION_ID": LYZR_PERPLEXITY_SESSION_ID,
     "APOLLO_API_KEY": APOLLO_API_KEY
 }
 for var_name, var_value in required_env_vars.items():
@@ -62,24 +55,28 @@ for var_name, var_value in required_env_vars.items():
         logger.error(f"Missing required environment variable: {var_name}")
         raise ValueError(f"Environment variable {var_name} is not set")
 
-# Lyzr agent API headers
-LYZR_AGENT_HEADERS = {
-    "Content-Type": "application/json",
-    "x-api-key": LYZR_API_KEY
+# Perplexity API headers
+PERPLEXITY_HEADERS = {
+    "Authorization": f"Bearer {PERPLEXITY_API_KEY}",
+    "Content-Type": "application/json"
 }
 
 def sanitize_json_string(json_str: any) -> str:
     """
     Comprehensive JSON sanitization with multi-stage repair capabilities
-    Handles smart quotes, unescaped characters, and complex code blocks
+    Handles smart quotes, unescaped characters, complex code blocks, and truncated JSON
     """
     json_str = str(json_str).strip()
     if not json_str:
-        return "{}"
+        return "[]"
 
+    # Extract JSON from code block if present
     code_block_match = re.search(r'```(?:json)?\s*(.*?)\s*```', json_str, re.DOTALL)
     if code_block_match:
         json_str = code_block_match.group(1).strip()
+
+    # Remove any trailing narrative text (e.g., **Note:** or other comments)
+    json_str = re.split(r'\n\s*\n\s*\*\*Note:\*\*|\n\s*\n\s*[^[{]', json_str)[0].strip()
 
     json_str = re.sub(r'[\x00-\x09\x0b-\x1f\x7f]', '', json_str)
     replacements = {
@@ -89,6 +86,7 @@ def sanitize_json_string(json_str: any) -> str:
     for bad, good in replacements.items():
         json_str = json_str.replace(bad, good)
 
+    # Handle truncated JSON
     try:
         json.loads(json_str)
         return json_str
@@ -96,13 +94,24 @@ def sanitize_json_string(json_str: any) -> str:
         error_pos = e.pos
         logger.warning(f"Initial parse failed at {error_pos}: {e}")
 
-    try:
+        # Remove trailing incomplete object if present
+        if json_str.endswith('{') or json_str.endswith(','):
+            last_comma = json_str.rfind(',')
+            last_brace = json_str.rfind('{')
+            if last_comma > last_brace:
+                json_str = json_str[:last_comma]
+            elif last_brace > 0:
+                json_str = json_str[:last_brace]
+            json_str = json_str.rstrip(',').rstrip() + ']'
+
+        # Fix unterminated strings
         if "Unterminated string" in str(e):
             quote_char = json_str[error_pos-1]
             end_quote = json_str.find(quote_char, error_pos)
             if end_quote == -1:
                 json_str += quote_char
 
+        # Balance braces and brackets
         stack = []
         for i, c in enumerate(json_str):
             if c in '{[':
@@ -118,19 +127,22 @@ def sanitize_json_string(json_str: any) -> str:
         while stack:
             json_str += '}' if stack.pop() == '{' else ']'
 
-        return json.dumps(json.loads(json_str), indent=None)
-    except Exception:
-        pass
+        try:
+            json.loads(json_str)
+            return json_str
+        except json.JSONDecodeError as e:
+            logger.warning(f"Secondary parse failed: {e}")
 
+    # Fallback to literal eval
     try:
         parsed = ast.literal_eval(json_str)
         return json.dumps(parsed)
     except Exception as e:
         logger.error(f"Literal eval fallback failed: {e}")
 
-    if json_str.startswith('{'):
-        return f'[{json_str}]'
-    return json_str
+    # Final fallback: return empty array
+    logger.error(f"Returning empty array due to unrecoverable JSON errors")
+    return "[]"
 
 # Retry decorator for API calls
 def async_retry(max_attempts: int = 3, delay: float = 2.0):
@@ -145,10 +157,11 @@ def async_retry(max_attempts: int = 3, delay: float = 2.0):
                         if isinstance(result, dict) and ("name" in result or "error" in result):
                             return result
                         logger.warning(f"Invalid enrich_company result on attempt {attempt + 1}: {result}")
-                    # Original check for Lyzr API responses
-                    elif result and isinstance(result.get("response"), str):
+                    # Check for Perplexity API responses
+                    elif result and isinstance(result.get("choices"), list) and len(result["choices"]) > 0:
                         try:
-                            json.loads(sanitize_json_string(result["response"]))
+                            content = result["choices"][0].get("message", {}).get("content", "{}")
+                            json.loads(sanitize_json_string(content))
                             return result
                         except json.JSONDecodeError:
                             logger.warning(f"Invalid JSON on attempt {attempt + 1}")
@@ -170,13 +183,13 @@ search_prompts = [
         "content": """Identify boutique retail consulting firms for merger potential with the following criteria:
 
 Target Firms:
-- Headquartered in North America, Europe
+- Headquartered in North America, Canada, Europe (France, UK, Netherlands, Austria, Ireland, Spain, Germany, Sweden, Italy, Belgium)
 - Annual revenue: $10-500M (exclude firms with revenue outside this range)
 - Specializations: Product Development, Sourcing Strategy, Supply Chain Optimization
 - Primary client base: Enterprise retailers (revenue >$500M)
 
 Research Methodology:
-- Identify 15-30 firms meeting all criteria [NOT LESS THAN 15, THIS IS IMPORTANT]
+- Identify 15-30 firms meeting all criteria [NOT LESS THAN 20, THIS IS IMPORTANT]
 - Cross-reference data from company websites, industry reports (e.g., Retail Dive, Consulting.us), and LinkedIn
 - Validate through public records or client testimonials; data must be confirmed by at least two credible sources listed below
 - Exclude firms with incomplete data or revenue outside $10-500M
@@ -230,13 +243,13 @@ Output Requirements:
         "content": """Analyze the competitive landscape of boutique retail consulting firms for merger potential:
 
 Target Firms:
-- Headquartered in North America, Europe
+- Headquartered in North America, Canada, Europe (France, UK, Netherlands, Austria, Ireland, Spain, Germany, Sweden, Italy, Belgium)
 - Annual revenue: $10-500M (exclude firms with revenue outside this range)
 - Specializations: Product Development, Sourcing Strategy, Procurement Optimization
 - Primary client base: Enterprise retailers (revenue >$500M)
 
 Research Methodology:
-- Identify 15-30 firms meeting all criteria [NOT LESS THAN 15, THIS IS IMPORTANT]
+- Identify 15-30 firms meeting all criteria [NOT LESS THAN 20, THIS IS IMPORTANT]
 - Cross-reference data from industry reports (e.g., IBISWorld), company websites, and LinkedIn
 - Validate through client testimonials or public records; data must be confirmed by at least two credible sources listed below
 - Exclude firms with incomplete data or revenue outside $10-500M
@@ -290,13 +303,13 @@ Output Requirements:
         "content": """Conduct a survey of boutique procurement strategy consulting firms for merger potential:
 
 Target Firms:
-- Headquartered in North America, Europe
+- Headquartered in North America, Canada, Europe (France, UK, Netherlands, Austria, Ireland, Spain, Germany, Sweden, Italy, Belgium)
 - Annual revenue: $10-500M (exclude firms with revenue outside this range)
 - Specializations: Strategic Sourcing, Global Procurement, Retail Supply Chain Optimization
 - Primary client base: Enterprise retailers (revenue >$500M)
 
 Research Methodology:
-- Identify 15-30 firms meeting all criteria [NOT LESS THAN 15, THIS IS IMPORTANT]
+- Identify 15-30 firms meeting all criteria [NOT LESS THAN 20, THIS IS IMPORTANT]
 - Cross-reference data from company websites, industry reports (e.g., Procurement Leaders), and LinkedIn
 - Validate through public records or client testimonials; data must be confirmed by at least two credible sources listed below
 - Exclude firms with incomplete data or revenue outside $10-500M
@@ -349,13 +362,13 @@ Output Requirements:
         "content": """Identify boutique retail consulting firms with expertise in product development for merger potential:
 
 Target Firms:
-- Headquartered in North America, Europe
+- Headquartered in North America, Canada, Europe (France, UK, Netherlands, Austria, Ireland, Spain, Germany, Sweden, Italy, Belgium)
 - Annual revenue: $10-500M (exclude firms with revenue outside this range)
 - Specializations: Concept Development, Product Optimization, Launch Strategy
 - Primary client base: Enterprise retailers (revenue >$500M)
 
 Research Methodology:
-- Identify 15-30 firms meeting all criteria [NOT LESS THAN 15, THIS IS IMPORTANT]
+- Identify 15-30 firms meeting all criteria [NOT LESS THAN 20, THIS IS IMPORTANT]
 - Cross-reference data from company websites, industry reports (e.g., Retail Dive), and LinkedIn
 - Validate through public records or client testimonials; data must be confirmed by at least two credible sources listed below
 - Exclude firms with incomplete data or revenue outside $10-500M
@@ -408,13 +421,13 @@ Output Requirements:
         "content": """Identify boutique retail consulting firms with expertise in supply chain optimization for merger potential:
 
 Target Firms:
-- Headquartered in North America, Europe
+- Headquartered in North America, Canada, Europe (France, UK, Netherlands, Austria, Ireland, Spain, Germany, Sweden, Italy, Belgium)
 - Annual revenue: $10-500M (exclude firms with revenue outside this range)
 - Specializations: Supply Chain Optimization, Vendor Assessment/Evaluation
 - Primary client base: Enterprise retailers (revenue >$500M)
 
 Research Methodology:
-- Identify 15-30 firms meeting all criteria [NOT LESS THAN 15, THIS IS IMPORTANT]
+- Identify 15-30 firms meeting all criteria [NOT LESS THAN 20, THIS IS IMPORTANT]
 - Cross-reference data from company websites, industry reports (e.g., Supply Chain Dive), and LinkedIn
 - Validate through public records or client testimonials; data must be confirmed by at least two credible sources listed below
 - Exclude firms with incomplete data or revenue outside $10-500M
@@ -501,40 +514,45 @@ async def enrich_company(company_domain: str) -> Dict:
             if not org:
                 logger.warning(f"No organization data returned for domain {company_domain}")
                 return {"error": "No organization data found"}
-            return org  # Return the full organization object
+            return org
         except Exception as e:
             logger.error(f"Apollo API error for domain {company_domain}: {str(e)}")
             return {"error": str(e)}
-        
 
-# Lyzr agent query function
+# Perplexity API query function
 @async_retry(max_attempts=3, delay=2.0)
 async def query_lyzr_agent(agent_id: str, session_id: str, prompt: str) -> Optional[Dict]:
     payload = {
-        "user_id": LYZR_USER_ID,
-        "agent_id": agent_id,
-        "session_id": session_id,
-        "message": prompt
+        "model": "sonar-pro",
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant providing structured JSON responses for merger and acquisition analysis."},
+            {"role": "user", "content": prompt}
+        ],
+        "max_tokens": 20000,
+        "temperature": 0.3,
+        "top_p": 0.9
     }
+    logger.debug(f"Perplexity API request payload: {json.dumps(payload, indent=2)}")
     try:
         response = await async_client.post(
-            LYZR_AGENT_URL,
+            "https://api.perplexity.ai/chat/completions",
             json=payload,
-            headers=LYZR_AGENT_HEADERS
+            headers=PERPLEXITY_HEADERS
         )
         response.raise_for_status()
         json_response = response.json()
-        raw_response = json_response.get("response", "{}")
         logger.info(f"API response size: {len(str(json_response))} bytes")
-        json_response["response"] = sanitize_json_string(raw_response)
-        print("RESPONSE",json_response)
+        logger.debug(f"Perplexity API response: {json.dumps(json_response, indent=2)}")
+        print("Response",json_response)
         return json_response
     except Exception as e:
-        logger.error(f"Lyzr agent API error: {e}")
+        logger.error(f"Perplexity API error: {e}")
+        if isinstance(e, httpx.HTTPStatusError):
+            logger.error(f"Response content: {e.response.text}")
         raise
 
 async def query_perplexity(prompt: str, agent_id: str) -> Optional[Dict]:
-    return await query_lyzr_agent(agent_id, LYZR_PERPLEXITY_SESSION_ID, prompt)
+    return await query_lyzr_agent(agent_id, "", prompt)
 
 async def process_prompt_batch(prompt_data: Dict) -> Dict:
     try:
@@ -623,18 +641,19 @@ Output Requirements:
 - Include only the companies from the provided company_list
 - Return JSON only, with no narrative text
 """
-    response = await query_perplexity(analysis_prompt.format(company_list=company_list, full_context=full_context), "6817b49c2f31429a00a39d39")  # Using first agent-ID for Claude
+    response = await query_perplexity(analysis_prompt.format(company_list=company_list, full_context=full_context), "6817b49c2f31429a00a39d39")
     if response:
         try:
-            json_content = json.loads(sanitize_json_string(response.get("response", "{}")))
+            content = response.get("choices", [{}])[0].get("message", {}).get("content", "{}")
+            json_content = json.loads(sanitize_json_string(content))
             return json_content.get("analysis", {})
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse Claude response as JSON: {e}")
+            logger.error(f"Failed to parse Perplexity response as JSON: {e}")
             return {}
     return {}
 
 async def process_api_response(response: Dict, prompt_data: Dict) -> Dict:
-    raw_content = response.get('response', '')
+    raw_content = response.get('choices', [{}])[0].get('message', {}).get('content', '')
     logger.debug(f"Raw Perplexity API response:\n{raw_content[:2000]}")
     Path("api_logs").mkdir(exist_ok=True)
     log_file = f"api_logs/{time.time()}.json"
@@ -656,24 +675,47 @@ async def process_api_response(response: Dict, prompt_data: Dict) -> Dict:
             "validation_warnings": ["Invalid JSON response"]
         }
     
+    # Check for truncation
+    if response.get('choices', [{}])[0].get('finish_reason') == 'length':
+        logger.warning("Response truncated due to token limit")
+        validation_warnings = ["Response truncated due to token limit"]
+    else:
+        validation_warnings = []
+
     validated_companies = []
-    validation_warnings = []
     for company in json_content if isinstance(json_content, list) else []:
         if not isinstance(company, dict):
+            validation_warnings.append("Invalid company data: not a dictionary")
             continue
-        required_fields = ["name", "domain_name", "estimated_revenue", "employee_count"]
+        required_fields = ["name", "domain_name", "estimated_revenue", "employee_count", "sources"]
         missing_fields = [field for field in required_fields if not company.get(field)]
         if missing_fields:
             validation_warnings.append(f"Company {company.get('name', 'unknown')} missing fields: {missing_fields}")
             continue
+        
+        # Validate revenue strictly within $10-500M
         revenue_str = company.get("estimated_revenue", "")
         try:
-            revenue = float(revenue_str.replace("$", "").replace("M", ""))
-            if not (10 <= revenue <= 20):
-                validation_warnings.append(f"Company {company['name']} revenue {revenue}M outside $10-500M range")
-                continue
+            # Handle ranges (e.g., "$15M-$50M") or single values (e.g., "$15M")
+            revenue_clean = revenue_str.replace("$", "").replace("M", "").replace("(Retail Practice)", "").replace("(Strategy Division)", "").replace("(Consulting Division)", "").strip()
+            if "-" in revenue_clean:
+                low, high = map(float, revenue_clean.split("-"))
+                if not (10 <= low <= 500 and 10 <= high <= 500):
+                    validation_warnings.append(f"Company {company['name']} revenue range {revenue_str} outside $10-500M")
+                    continue
+            else:
+                revenue = float(revenue_clean)
+                if not (10 <= revenue <= 500):
+                    validation_warnings.append(f"Company {company['name']} revenue {revenue}M outside $10-500M")
+                    continue
         except (ValueError, TypeError):
             validation_warnings.append(f"Invalid revenue format for {company['name']}: {revenue_str}")
+            continue
+
+        # Validate at least two credible sources
+        sources = company.get("sources", [])
+        if len(sources) < 2:
+            validation_warnings.append(f"Company {company['name']} has fewer than 2 credible sources: {sources}")
             continue
 
         logger.info(f"Fetching Apollo data for {company['name']} with domain {company['domain_name']}")
@@ -688,6 +730,10 @@ async def process_api_response(response: Dict, prompt_data: Dict) -> Dict:
             validated_company["validation_warnings"] = [f"Apollo API failed: {apollo_data['error']}"]
             validated_companies.append(validated_company)
             validation_warnings.append(f"Apollo API failed for {company['name']}: {apollo_data['error']}")
+
+    # Warn if fewer than 15 firms are returned
+    if len(validated_companies) < 15:
+        validation_warnings.append(f"Only {len(validated_companies)} firms returned, expected 15-30")
 
     companies = [company["name"] for company in validated_companies]
     return {
@@ -718,7 +764,6 @@ def validate_company_data(perplexity_data: Dict, apollo_data: Dict) -> Dict:
     if city and state and country:
         validated["office_locations"] = [f"{city}, {state}, {country}"]
     elif city or state or country:
-        # Include partial location if some fields are present
         location_parts = [part for part in [city, state, country] if part]
         validated["office_locations"] = [", ".join(location_parts)]
     else:
@@ -781,21 +826,18 @@ async def run_prompt(request: PromptRequest) -> Dict:
 
     processed = await process_api_response(response, prompt_data)
     
-    # Save or update results in merger_search_results.json
     result_file = Path("merger_search_results.json")
     existing_results = {}
     if result_file.exists():
         with open(result_file, 'r') as f:
             existing_results = json.load(f)
     
-    # Update results for this prompt
     existing_results[prompt_data['title']] = {
         "raw_response": processed.get("response", []),
         "extracted_companies": processed.get("companies", []),
         "validation_warnings": processed.get("validation_warnings", [])
     }
     
-    # Save updated results
     await save_to_json(existing_results)
     
     return processed
@@ -810,14 +852,14 @@ async def extract_companies_endpoint(content: str) -> CompaniesResponse:
         companies = []
     return CompaniesResponse(companies=companies)
 
-@app.post("/analyze", summary="Analyze Companies with Claude", description="Analyzes a list of companies using Lyzr agent API for Claude, expecting JSON output, for merger candidacy based on provided responses.")
+@app.post("/analyze", summary="Analyze Companies with Claude", description="Analyzes a list of companies using Perplexity API for Claude, expecting JSON output, for merger candidacy based on provided responses.")
 async def analyze_companies(request: AnalysisRequest) -> Dict:
     analysis = await analyze_with_claude(request.companies, request.raw_responses)
     if not analysis:
-        raise HTTPException(status_code=500, detail="Lyzr agent API request failed or returned empty analysis")
+        raise HTTPException(status_code=500, detail="Perplexity API request failed or returned empty analysis")
     return {"analysis": analysis}
 
-@app.post("/run_merger_search", summary="Run Full Merger Search", description="Executes the full merger search process, including running all prompts, extracting companies, saving results, and analyzing with Claude via Lyzr agent API, returning all responses as JSON objects.")
+@app.post("/run_merger_search", summary="Run Full Merger Search", description="Executes the full merger search process, including running all prompts, extracting companies, saving results, and analyzing with Claude via Perplexity API, returning all responses as JSON objects.")
 async def run_merger_search_endpoint() -> MergerSearchResponse:
     batch_tasks = [process_prompt_batch(p) for p in search_prompts]
     batch_results = await asyncio.gather(*batch_tasks)
@@ -856,7 +898,6 @@ async def run_merger_search_endpoint() -> MergerSearchResponse:
 
 @app.post("/redo_search", summary="Redo Merger Search", description="Re-runs the full merger search process, overwriting existing results.")
 async def redo_search_endpoint() -> MergerSearchResponse:
-    # Clear existing files if they exist
     csv_file = Path("identified_companies.csv")
     json_file = Path("merger_search_results.json")
     if csv_file.exists():
@@ -864,7 +905,6 @@ async def redo_search_endpoint() -> MergerSearchResponse:
     if json_file.exists():
         json_file.unlink()
 
-    # Run the full merger search
     return await run_merger_search_endpoint()
 
 @app.get("/fetch_existing_items", summary="Fetch Existing Items", description="Retrieves the existing merger search results from the JSON file, if available.")
@@ -922,8 +962,6 @@ async def enrich_company_endpoint(request: EnrichCompanyRequest) -> Dict:
         raise HTTPException(status_code=400, detail=result["error"])
     return result
 
-# Fetch Company Details from Apollo
-# Fetch Company Details from Apollo
 @app.post("/fetch_company_apollo", summary="Fetch Company Details from Apollo", description="Fetches detailed company information from Apollo API for merger and acquisition analysis, given a company domain.")
 async def fetch_company_apollo(request: EnrichCompanyRequest) -> Dict:
     if not request.company_domain.strip():
@@ -946,7 +984,7 @@ async def fetch_company_apollo(request: EnrichCompanyRequest) -> Dict:
         "message": f"Successfully retrieved Apollo data for {request.company_domain}"
     }
 
-@app.post("/fetch_company_perplexity", summary="Fetch Company Details from Perplexity via Lyzr", description="Fetches detailed company information from Perplexity via Lyzr agent for merger and acquisition analysis, given a company name and domain.")
+@app.post("/fetch_company_perplexity", summary="Fetch Company Details from Perplexity", description="Fetches detailed company information from Perplexity API for merger and acquisition analysis, given a company name and domain.")
 async def fetch_company_perplexity(request: FetchCompanyPerplexityRequest) -> Dict:
     if not request.company_name.strip() or not request.company_domain.strip():
         raise HTTPException(status_code=400, detail="Company name and domain cannot be empty")
@@ -1000,11 +1038,11 @@ Output Requirements:
 - Return JSON only, with no narrative text or comments
 - Return an empty object {{}} if data is unavailable, cannot be validated by at least two sources, or if the firm does not meet all criteria
 """
-    response = await query_perplexity(prompt, "6817b49c2f31429a00a39d39")  # Using first agent-ID
+    response = await query_perplexity(prompt, "6817b49c2f31429a00a39d39")
     if not response:
         raise HTTPException(status_code=500, detail="Perplexity API request failed")
     
-    raw_content = response.get('response', '')
+    raw_content = response.get('choices', [{}])[0].get('message', {}).get('content', '')
     logger.debug(f"Raw Perplexity API response for {request.company_name}:\n{raw_content[:2000]}")
     Path("api_logs").mkdir(exist_ok=True)
     log_file = f"api_logs/perplexity_{time.time()}.json"
@@ -1036,10 +1074,17 @@ Output Requirements:
         else:
             revenue_str = company_data.get("estimated_revenue", "")
             try:
-                revenue = float(revenue_str.replace("$", "").replace("M", ""))
-                if not (10 <= revenue <= 20):
-                    validation_warnings.append(f"Company {request.company_name} revenue {revenue}M outside $10-500M range")
-                    company_data = {}
+                revenue_clean = revenue_str.replace("$", "").replace("M", "").strip()
+                if "-" in revenue_clean:
+                    low, high = map(float, revenue_clean.split("-"))
+                    if not (10 <= low <= 500 and 10 <= high <= 500):
+                        validation_warnings.append(f"Company {request.company_name} revenue range {revenue_str} outside $10-500M")
+                        company_data = {}
+                else:
+                    revenue = float(revenue_clean)
+                    if not (10 <= revenue <= 500):
+                        validation_warnings.append(f"Company {request.company_name} revenue {revenue}M outside $10-500M")
+                        company_data = {}
             except (ValueError, TypeError):
                 validation_warnings.append(f"Invalid revenue format for {request.company_name}: {revenue_str}")
                 company_data = {}
