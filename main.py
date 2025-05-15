@@ -166,7 +166,7 @@ def async_retry(max_attempts: int = 3, delay: float = 2.0):
 search_prompts = [
     {
         "title": "Initial Target Identification",
-        "agent-ID": "6812315c360229f1a4e77f3b",
+        "agent-ID": "6817b49c2f31429a00a39d39",
         "content": """Identify boutique retail consulting firms for merger potential with the following criteria:
 
 Target Firms:
@@ -226,7 +226,7 @@ Output Requirements:
     },
     {
         "title": "Market Analysis and Competitive Landscape",
-        "agent-ID": "6812315c360229f1a4e77f3b",
+        "agent-ID": "6818469e2f31429a00a39ddd",
         "content": """Analyze the competitive landscape of boutique retail consulting firms for merger potential:
 
 Target Firms:
@@ -286,7 +286,7 @@ Output Requirements:
     },
     {
         "title": "Sourcing and Procurement Specialists",
-        "agent-ID": "6812315c360229f1a4e77f3b",
+        "agent-ID": "6818471a2f31429a00a39de1",
         "content": """Conduct a survey of boutique procurement strategy consulting firms for merger potential:
 
 Target Firms:
@@ -345,7 +345,7 @@ Output Requirements:
     },
     {
         "title": "Product Development Expertise",
-        "agent-ID": "6812315c360229f1a4e77f3b",
+        "agent-ID": "681847532f31429a00a39de5",
         "content": """Identify boutique retail consulting firms with expertise in product development for merger potential:
 
 Target Firms:
@@ -404,7 +404,7 @@ Output Requirements:
     },
     {
         "title": "Supply Chain Specialists",
-        "agent-ID": "6812315c360229f1a4e77f3b",
+        "agent-ID": "681847bb2f31429a00a39dec",
         "content": """Identify boutique retail consulting firms with expertise in supply chain optimization for merger potential:
 
 Target Firms:
@@ -485,6 +485,26 @@ class FetchCompanyPerplexityRequest(BaseModel):
     company_name: str
     company_domain: str
 
+class CompanyData(BaseModel):
+    name: str
+    domain_name: str
+    estimated_revenue: str
+    revenue_growth: str
+    employee_count: str
+    key_clients: List[str]
+    leadership: List[Dict[str, str]]
+    merger_synergies: str
+    Industries: str
+    Services: str
+    Broad_Category: str
+    Ownership: str
+    sources: List[str]
+    office_locations: Optional[List[str]] = None
+    validation_warnings: Optional[List[str]] = None
+
+class AnalysisRequest(BaseModel):
+    companies: List[CompanyData]
+
 # Apollo API enrichment function
 @async_retry(max_attempts=3, delay=2.0)
 async def enrich_company(company_domain: str) -> Dict:
@@ -514,8 +534,10 @@ async def query_lyzr_agent(agent_id: str, session_id: str, prompt: str) -> Optio
         "user_id": LYZR_USER_ID,
         "agent_id": agent_id,
         "session_id": session_id,
-        "message": prompt
+        "message": "Return atleast 15-20 firms"
     }
+
+    print("PAYLOAD FOR THE CALL", payload)
     try:
         response = await async_client.post(
             LYZR_AGENT_URL,
@@ -575,6 +597,48 @@ def extract_companies(json_content: any) -> List[str]:
     except Exception as e:
         logger.error(f"Deep extraction failed: {e}")
         return []
+    
+
+async def analyze_companies_with_claude(companies: List[Dict]) -> Optional[Dict]:
+    company_data_str = json.dumps(companies, indent=2)
+    payload = { 
+        "user_id": "pranav@lyzr.ai",
+        "agent_id": "68235606ffaabb77dd9b16fc",
+        "session_id": "68235606ffaabb77dd9b16fc-bgio2t15bjl",
+        "message": company_data_str
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": "sk-default-PPcvzcCe4cJRRP8JkEXnT51woYJUXzMZ"
+    }
+    try:
+        response = await async_client.post(
+            "https://agent-dev.test.studio.lyzr.ai/v3/inference/chat/",
+            json=payload,
+            headers=headers
+        )
+        response.raise_for_status()
+        json_response = response.json()
+        raw_content = json_response.get("response", "{}")
+        logger.debug(f"Raw Claude API response:\n{raw_content[:2000]}")
+        Path("api_logs").mkdir(exist_ok=True)
+        log_file = f"api_logs/claude_analysis_{time.time()}.json"
+        with open(log_file, "w") as f:
+            f.write(raw_content)
+        sanitized = sanitize_json_string(raw_content)
+        json_content = json.loads(sanitized)
+        analysis = json_content.get("analysis", {})
+        if not analysis:
+            logger.error("Claude response missing 'analysis' key")
+            return {}
+        return analysis
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse Claude response as JSON: {e}")
+        return {}
+    except Exception as e:
+        logger.error(f"Claude API request failed: {e}")
+        return {}
+
 
 async def analyze_with_claude(companies: List[str], raw_responses: Dict[str, str]) -> Optional[Dict]:
     full_context = "\n\n".join([f"### {title}\n{content}" for title, content in raw_responses.items()])
@@ -667,14 +731,7 @@ async def process_api_response(response: Dict, prompt_data: Dict) -> Dict:
             validation_warnings.append(f"Company {company.get('name', 'unknown')} missing fields: {missing_fields}")
             continue
         revenue_str = company.get("estimated_revenue", "")
-        try:
-            revenue = float(revenue_str.replace("$", "").replace("M", ""))
-            if not (10 <= revenue <= 20):
-                validation_warnings.append(f"Company {company['name']} revenue {revenue}M outside $10-500M range")
-                continue
-        except (ValueError, TypeError):
-            validation_warnings.append(f"Invalid revenue format for {company['name']}: {revenue_str}")
-            continue
+        
 
         logger.info(f"Fetching Apollo data for {company['name']} with domain {company['domain_name']}")
         await asyncio.sleep(0.5)
@@ -810,9 +867,12 @@ async def extract_companies_endpoint(content: str) -> CompaniesResponse:
         companies = []
     return CompaniesResponse(companies=companies)
 
-@app.post("/analyze", summary="Analyze Companies with Claude", description="Analyzes a list of companies using Lyzr agent API for Claude, expecting JSON output, for merger candidacy based on provided responses.")
+@app.post("/analyze", summary="Analyze Companies with Claude", description="Analyzes a list of companies using Lyzr agent API for Claude, expecting JSON output with rankings and rationales for merger candidacy based on provided company data.")
 async def analyze_companies(request: AnalysisRequest) -> Dict:
-    analysis = await analyze_with_claude(request.companies, request.raw_responses)
+    if not request.companies:
+        raise HTTPException(status_code=400, detail="No companies provided for analysis")
+    companies_dict = [company.dict() for company in request.companies]
+    analysis = await analyze_companies_with_claude(companies_dict)
     if not analysis:
         raise HTTPException(status_code=500, detail="Lyzr agent API request failed or returned empty analysis")
     return {"analysis": analysis}
