@@ -528,14 +528,14 @@ async def enrich_company(company_domain: str) -> Dict:
             return {"error": str(e)}
         
 
-# Lyzr agent query function
 @async_retry(max_attempts=3, delay=2.0)
 async def query_lyzr_agent(agent_id: str, session_id: str, prompt: str) -> Optional[Dict]:
+    print("payload", prompt)
     payload = {
         "user_id": LYZR_USER_ID,
         "agent_id": agent_id,
         "session_id": session_id,
-        "message": "Return atleast 15-20 firms"
+        "message": prompt
     }
 
     print("PAYLOAD FOR THE CALL", payload)
@@ -550,12 +550,12 @@ async def query_lyzr_agent(agent_id: str, session_id: str, prompt: str) -> Optio
         raw_response = json_response.get("response", "{}")
         logger.info(f"API response size: {len(str(json_response))} bytes")
         json_response["response"] = sanitize_json_string(raw_response)
-        print("RESPONSE",json_response)
+        print("RESPONSE", json_response)
         return json_response
     except Exception as e:
         logger.error(f"Lyzr agent API error: {e}")
         raise
-
+    
 async def query_perplexity(prompt: str, agent_id: str) -> Optional[Dict]:
     return await query_lyzr_agent(agent_id, LYZR_PERPLEXITY_SESSION_ID, prompt)
 
@@ -833,11 +833,15 @@ async def run_prompt(request: PromptRequest) -> Dict:
     except IndexError:
         raise HTTPException(status_code=400, detail="Invalid prompt index")
     
-    # Build the prompt content, incorporating the custom message if provided
-    prompt_content = prompt_data['content']
+    # Construct prompt_content based on whether a custom message is provided
     if request.custom_message:
-        prompt_content += f"\n\nAdditional Search Requirements: {request.custom_message}"
+        # Include the custom message as a specific user request
+        prompt_content = f"Return at least 15-20 firms + User Request: {request.custom_message} [IMPORTANT]"
+    else:
+        # Use default instruction
+        prompt_content = f"Return at least 15-20 firms"
     
+    print("prompt_content", prompt_content)
     response = await query_perplexity(prompt_content, prompt_data['agent-ID'])
     if not response:
         raise HTTPException(status_code=500, detail="API request failed")
