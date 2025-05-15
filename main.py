@@ -466,6 +466,7 @@ Output Requirements:
 # Pydantic models for request/response validation
 class PromptRequest(BaseModel):
     prompt_index: int
+    custom_message: Optional[str] = None
 
 class CompaniesResponse(BaseModel):
     companies: List[str]
@@ -825,14 +826,19 @@ def diagnose_json_issues(json_str: str) -> Dict:
 async def list_prompts() -> List[Dict]:
     return [{"index": i, "title": p["title"]} for i, p in enumerate(search_prompts)]
 
-@app.post("/run_prompt", summary="Run a Specific Prompt", description="Runs a specific prompt by index and returns processed results.")
+@app.post("/run_prompt", summary="Run a Specific Prompt", description="Runs a specific prompt by index and returns processed results. Optionally includes a custom message to refine the search.")
 async def run_prompt(request: PromptRequest) -> Dict:
     try:
         prompt_data = search_prompts[request.prompt_index]
     except IndexError:
         raise HTTPException(status_code=400, detail="Invalid prompt index")
     
-    response = await query_perplexity(prompt_data['content'], prompt_data['agent-ID'])
+    # Build the prompt content, incorporating the custom message if provided
+    prompt_content = prompt_data['content']
+    if request.custom_message:
+        prompt_content += f"\n\nAdditional Search Requirements: {request.custom_message}"
+    
+    response = await query_perplexity(prompt_content, prompt_data['agent-ID'])
     if not response:
         raise HTTPException(status_code=500, detail="API request failed")
 
@@ -849,7 +855,8 @@ async def run_prompt(request: PromptRequest) -> Dict:
     existing_results[prompt_data['title']] = {
         "raw_response": processed.get("response", []),
         "extracted_companies": processed.get("companies", []),
-        "validation_warnings": processed.get("validation_warnings", [])
+        "validation_warnings": processed.get("validation_warnings", []),
+        "custom_message": request.custom_message  # Save the custom message for reference
     }
     
     # Save updated results
