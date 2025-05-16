@@ -166,7 +166,7 @@ def async_retry(max_attempts: int = 3, delay: float = 2.0):
 search_prompts = [
     {
         "title": "Initial Target Identification",
-        "agent-ID": "6817b49c2f31429a00a39d39",
+        "agent-ID": "6825f6b2c8abf8bac32c4d75",
         "content": """Identify boutique retail consulting firms for merger potential with the following criteria:
 
 Target Firms:
@@ -226,7 +226,7 @@ Output Requirements:
     },
     {
         "title": "Market Analysis and Competitive Landscape",
-        "agent-ID": "6818469e2f31429a00a39ddd",
+        "agent-ID": "6825f7cf596f910103311b2f",
         "content": """Analyze the competitive landscape of boutique retail consulting firms for merger potential:
 
 Target Firms:
@@ -286,7 +286,7 @@ Output Requirements:
     },
     {
         "title": "Sourcing and Procurement Specialists",
-        "agent-ID": "6818471a2f31429a00a39de1",
+        "agent-ID": "6825f789c8abf8bac32c4d83",
         "content": """Conduct a survey of boutique procurement strategy consulting firms for merger potential:
 
 Target Firms:
@@ -345,7 +345,7 @@ Output Requirements:
     },
     {
         "title": "Product Development Expertise",
-        "agent-ID": "681847532f31429a00a39de5",
+        "agent-ID": "6825f75573107c158d6094de",
         "content": """Identify boutique retail consulting firms with expertise in product development for merger potential:
 
 Target Firms:
@@ -404,7 +404,7 @@ Output Requirements:
     },
     {
         "title": "Supply Chain Specialists",
-        "agent-ID": "681847bb2f31429a00a39dec",
+        "agent-ID": "6825f6e9c8abf8bac32c4d76",
         "content": """Identify boutique retail consulting firms with expertise in supply chain optimization for merger potential:
 
 Target Firms:
