@@ -1007,7 +1007,7 @@ async def analyze_companies_with_claude(companies: List[Dict]) -> Optional[Dict]
     }
     headers = {
         "Content-Type": "application/json",
-        "x-api-key": "sk-default-cph88XRhH9uJ9v8589zkzIochVwO8Zge"
+        "x-api-key": LYZR_API_KEY
     }
     try:
         response = await async_client.post(
