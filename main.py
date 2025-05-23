@@ -460,8 +460,405 @@ Output Requirements:
             "https://www.supplychaindive.com/",
             "https://www.linkedin.com/"
         ]
+    },
+    {
+        "title": "Acquisition Target Identification - Digital Manufacturing",
+        "agent-ID": "682f0bed792e81c46d3d6908",
+        "content": """Identify boutique digital manufacturing consulting or solution firms for acquisition potential:
+
+Target Firms:
+- Headquartered in Japan or Germany
+- Annual revenue: $5M–$25M (ideal: ~$20M; exclude firms with revenue outside this range)
+- Ownership: Startups, privately held companies, or young firms (exclude large public companies such as Siemens, Hitachi, SAP)
+- Industry focus: Oil & Gas, Energy, Mining, Utilities
+- Client base: Medium to large enterprises
+- Specializations: Digital Manufacturing, Industrial IoT, Asset Performance Management, Digital Plant solutions, Predictive Analytics, Manufacturing Excellence
+
+Research Methodology:
+- Identify 15–30 firms meeting all criteria [NOT LESS THAN 15, THIS IS IMPORTANT]
+- Cross-reference data from company websites, startup databases (e.g., Tracxn, PitchBook), and industry publications
+- Validate through public records, client testimonials, or investor databases; data must be confirmed by at least two credible sources listed below
+- Exclude firms with incomplete data or revenue outside $5M–$25M
+- Look for companies using terminology such as:
+  - "Digital Plant solutions"
+  - "Industrial IoT"
+  - "Predictive Asset Analytics"
+  - "Asset Performance Management"
+  - "Intelligent Asset Management Strategy"
+  - "Manufacturing Excellence"
+  - "Digital Factory Applications"
+
+Evaluation Criteria:
+- Financial Performance: Estimated revenue, recent growth trajectory
+- Operational Scale: Year founded, employee count
+- Client Portfolio: Major clients in industrial sectors
+- Leadership: Key executives
+- Merger Fit: Alignment with reference company Boslan
+
+Output Requirements:
+- Return a JSON array of 15–30 firms in the following structure:
+  ```json
+  [
+    {
+      "name": "<string>",
+      "domain_name": "<string>",
+      "estimated_revenue": "<string, e.g., $15M>",
+      "revenue_growth": "<string, e.g., 10% CAGR over 3 years>",
+      "employee_count": "<string, e.g., 50-75 employees>",
+      "key_clients": ["<string>"],
+      "leadership": [
+        {
+          "name": "<string>",
+          "title": "<string>"
+        }
+      ],
+      "merger_synergies": "<string>",
+      "Industries": "<string>",
+      "Services": "<string>",
+      "Broad Category": "<string>",
+      "Ownership": "<string> e.g, Private, JV, Partnership, Public",
+      "sources": ["<string>"]
     }
+  ]
+  ```
+- Include 2 credible sources per firm
+- If data is unavailable or cannot be validated by at least two sources, exclude from results
+- Return JSON only, with no narrative text or comments
+- Ensure all firms meet the $5M–$25M revenue criterion""",
+        "sources": [
+            "https://www.industryweek.com/technology-and-iiot/digital-tools",
+            "https://www.isa.org/intech-home/digital-transformation",
+            "https://www.processingmagazine.com/digital-transformation",
+            "https://pitchbook.com/profiles/company/acquisition-targets",
+            "https://tracxn.com/explore/Digital-Manufacturing-Startups-in-Japan",
+            "https://tracxn.com/explore/Digital-Manufacturing-Startups-in-Germany"
+        ]
+    },
+    {
+        "title": "Japanese Digital Manufacturing Acquisition Targets",
+        "agent-ID": "682f0c55ced2bfaff52a8b10",
+        "content": """Identify boutique digital manufacturing firms in Japan for acquisition potential:
+
+Target Firms:
+- Headquartered in Japan (international operations acceptable)
+- Annual revenue: $15M–$25M (ideal: ~$20M; exclude firms outside this range)
+- Ownership: Privately held, not subsidiaries of larger corporations
+- Age: Established companies (in business for 5+ years); exclude early-stage startups
+- Industry focus: Digital manufacturing solutions for Oil & Gas, Energy, Mining, Utilities
+- Client base: Primarily enterprise industrial clients
+- Specializations must include at least one of the following:
+  - Digital Plant Solutions
+  - Industrial IoT Implementations
+  - Asset Performance Management
+  - Predictive Maintenance Systems
+  - Digital Twin Technology
+  - Manufacturing Execution Systems
+
+Research Methodology:
+- Identify 15–30 firms meeting all criteria [NOT LESS THAN 15, THIS IS IMPORTANT]
+- Cross-reference data from company websites, investor databases (e.g., PitchBook, Tracxn), and industry publications
+- Validate through public records or client testimonials; data must be confirmed by at least two credible sources listed below
+- Exclude large corporations, publicly traded companies, early-stage startups, or firms with unverifiable revenue
+
+Evaluation Criteria:
+- Financial Performance: Estimated revenue and growth trajectory
+- Operational Scale: Year founded, employee count (if available)
+- Client Portfolio: Enterprise clients in industrial sectors
+- Leadership: Key executives (if available)
+- Merger Fit: Synergies, competitiveness, and differentiation
+
+Output Requirements:
+- Return a JSON array of 15–30 firms in the following structure:
+  ```json
+  [
+    {
+      "name": "<string>",
+      "domain_name": "<string>",
+      "estimated_revenue": "<string, e.g., $15M>",
+      "revenue_growth": "<string, e.g., 10% CAGR over 3 years>",
+      "employee_count": "<string, e.g., 50-75 employees>",
+      "key_clients": ["<string>"],
+      "leadership": [
+        {
+          "name": "<string>",
+          "title": "<string>"
+        }
+      ],
+      "merger_synergies": "<string>",
+      "Industries": "<string>",
+      "Services": "<string>",
+      "Broad Category": "<string>",
+      "Ownership": "<string> e.g, Private, JV, Partnership, Public",
+      "sources": ["<string>"]
+    }
+  ]
+  ```
+- Include 2 credible sources per firm
+- If data is unavailable or cannot be validated by at least two sources, exclude from results
+- Return JSON only, with no narrative text or comments
+- Ensure all firms meet the $15M–$25M revenue criterion""",
+        "sources": [
+            "https://tracxn.com/explore/Digital-Manufacturing-Startups-in-Japan",
+            "https://www.jpx.co.jp/english/markets/",
+            "https://www.industryweek.com/technology-and-iiot/article/companies-in-japan",
+            "https://www.automationworld.com/factory/iiot/article/japanese-industrial-iot",
+            "https://pitchbook.com/profiles/investor/japan-industrial-companies"
+        ]
+    },
+#     {
+#         "title": "German Digital Manufacturing Acquisition Targets",
+#         "agent-ID": "682f0cf3792e81c46d3d6915",
+#         "content": """Identify boutique digital manufacturing firms in Germany for acquisition potential:
+
+# Target Firms:
+# - Headquartered in Germany (international operations acceptable)
+# - Annual revenue: $15M–$25M (ideal: ~$20M; exclude firms outside this range)
+# - Ownership: Privately held, not subsidiaries of larger corporations
+# - Age: Established companies (in business for 5+ years); exclude early-stage startups
+# - Industry focus: Digital manufacturing solutions for Oil & Gas, Energy, Mining, Utilities
+# - Client base: Primarily enterprise industrial clients
+# - Specializations must include at least one of the following:
+#   - Digital Plant Solutions
+#   - Industrial IoT Implementations
+#   - Asset Performance Management
+#   - Predictive Maintenance Systems
+#   - Digital Twin Technology
+#   - Manufacturing Execution Systems
+
+# Research Methodology:
+# - Identify 15–30 firms meeting all criteria [NOT LESS THAN 15, THIS IS IMPORTANT]
+# - Cross-reference data from company websites, investor databases (e.g., PitchBook, Tracxn), and industry publications
+# - Validate through public records or client testimonials; data must be confirmed by at least two credible sources listed below
+# - Exclude large corporations, publicly traded companies, early-stage startups, or firms with unverifiable revenue
+
+# Evaluation Criteria:
+# - Financial Performance: Estimated revenue and growth trajectory
+# - Operational Scale: Year founded, employee count (if available)
+# - Client Portfolio: Enterprise clients in industrial sectors
+# - Leadership: Key executives (if available)
+# - Merger Fit: Synergies, competitiveness, and differentiation
+
+# Output Requirements:
+# - Return a JSON array of 15–30 firms in the following structure:
+#   ```json
+#   [
+#     {
+#       "name": "<string>",
+#       "domain_name": "<string>",
+#       "estimated_revenue": "<string, e.g., $15M>",
+#       "revenue_growth": "<string, e.g., 10% CAGR over 3 years>",
+#       "employee_count": "<string, e.g., 50-75 employees>",
+#       "key_clients": ["<string>"],
+#       "leadership": [
+#         {
+#           "name": "<string>",
+#           "title": "<string>"
+#         }
+#       ],
+#       "merger_synergies": "<string>",
+#       "Industries": "<string>",
+#       "Services": "<string>",
+#       "Broad Category": "<string>",
+#       "Ownership": "<string> e.g, Private, JV, Partnership, Public",
+#       "sources": ["<string>"]
+#     }
+#   ]
+#   ```
+# - Include 2 credible sources per firm
+# - If data is unavailable or cannot be validated by at least two sources, exclude from results
+# - Return JSON only, with no narrative text or comments
+# - Ensure all firms meet the $15M–$25M revenue criterion""",
+#         "sources": [
+#             "https://tracxn.com/explore/Digital-Manufacturing-Startups-in-Germany",
+#             "https://www.vdma.org/en/",
+#             "https://www.industryweek.com/technology-and-iiot/article/companies-in-germany",
+#             "https://www.automationworld.com/factory/iiot/article/german-industrial-iot",
+#             "https://pitchbook.com/profiles/investor/german-industrial-companies"
+#         ]
+#     },
+#     {
+#         "title": "Asset Management Excellence Acquisition Targets",
+#         "agent-ID": "682f0de8ced2bfaff52a8b34",
+#         "content": """I'm seeking mid-sized companies in Japan or Germany specializing in industrial asset management that would be suitable acquisition targets. Please provide detailed information on companies meeting these EXACT criteria:
+
+# - Revenue: Approximately $20M annual revenue (range $15M–$25M)
+# - Core business: Asset performance management, reliability solutions for industrial clients
+# - Target sectors: Oil & Gas, Energy, Mining, Utilities
+# - Status: Privately-held companies that could be acquired (NOT subsidiaries or public firms)
+# - Growth profile: Established businesses with recent growth and operational maturity
+
+# Focus exclusively on companies using terminology such as:
+# - "Reliability/Asset Performance Management"
+# - "Asset Reliability Consulting"
+# - "Intelligent Asset Management Strategy"
+# - "EAM/Maintenance and Reliability"
+# - "Predictive Asset Analytics"
+
+# Each company returned **must** include the following fields in this exact response format:
+# ```json
+# [
+#   {
+#     "name": "<string>",
+#     "domain_name": "<string>",
+#     "estimated_revenue": "<string, e.g., $15M>",
+#     "revenue_growth": "<string, e.g., 10% CAGR over 3 years>",
+#     "employee_count": "<string, e.g., 50-75 employees>",
+#     "key_clients": ["<string>"],
+#     "leadership": [
+#       {
+#         "name": "<string>",
+#         "title": "<string>"
+#       }
+#     ],
+#     "merger_synergies": "<string>",
+#     "Industries": "<string>",
+#     "Services": "<string>",
+#     "Broad Category": "<string>",
+#     "Ownership": "<string> e.g, Private, JV, Partnership, Public",
+#     "sources": ["<string>"]
+#   }
+# ]
+# ```
+
+# Additional rules:
+# - Include only real, verifiable companies in the $15M–$25M revenue range
+# - Include a minimum of 15 and maximum of 30 companies
+# - Use at least two reliable public sources to validate each record
+# - Exclude large enterprises, public companies, and early-stage startups
+# - Do not include companies without confirmed revenue estimates or unclear ownership
+
+# Make sure all companies focus on asset management for industrial sectors (Oil & Gas, Energy, Mining, Utilities).""",
+#         "sources": [
+#             "https://www.reliabilityweb.com/directory",
+#             "https://www.plantservices.com/vendors/products/asset-management",
+#             "https://www.upkeep.com/learning/asset-management",
+#             "https://pitchbook.com/profiles/industry/asset-management-companies",
+#             "https://tracxn.com/explore/Asset-Management-Startups-in-Japan",
+#             "https://tracxn.com/explore/Asset-Management-Startups-in-Germany"
+#         ]
+#     },
+#     {
+#         "title": "Industrial IoT Acquisition Targets",
+#         "agent-ID": "682f0e62490dde168e7cdc9b",
+#         "content": """I need to identify acquisition targets specializing in Industrial IoT solutions in Japan or Germany. Please provide detailed information on companies meeting these EXACT criteria:
+
+# - Revenue: Approximately $20M annual revenue (range $15M–$25M)
+# - Core focus: Industrial IoT solutions for asset-intensive industries
+# - Target markets: Oil & Gas, Energy, Mining, Utilities sectors
+# - Status: Privately-held companies suitable for acquisition (NOT subsidiaries or public firms)
+# - Stage: Growth-stage companies with proven market traction
+
+# Specifically focus on companies using terms such as:
+# - "Industrial IoT"
+# - "IIoT/Edge Consulting"
+# - "Digital Factory Applications"
+# - "IoT-enabled asset monitoring"
+# - "Sensor networks for industrial environments"
+# - "Edge computing for operational technology"
+
+# Each company must be presented using the following structured JSON response format:
+# ```json
+# [
+#   {
+#     "name": "<string>",
+#     "domain_name": "<string>",
+#     "estimated_revenue": "<string, e.g., $15M>",
+#     "revenue_growth": "<string, e.g., 10% CAGR over 3 years>",
+#     "employee_count": "<string, e.g., 50-75 employees>",
+#     "key_clients": ["<string>"],
+#     "leadership": [
+#       {
+#         "name": "<string>",
+#         "title": "<string>"
+#       }
+#     ],
+#     "merger_synergies": "<string>",
+#     "Industries": "<string>",
+#     "Services": "<string>",
+#     "Broad Category": "<string>",
+#     "Ownership": "<string> e.g, Private, JV, Partnership, Public",
+#     "sources": ["<string>"]
+#   }
+# ]
+# ```
+
+# Strict criteria:
+# - Include only real, verifiable companies with $15M–$25M in revenue
+# - Exclude public companies, large corporations, or early-stage startups
+# - Use at least two reliable public sources to validate each company
+# - All companies must operate in or serve industrial sectors in Japan or Germany
+
+# Do not include companies that are primarily software or IT firms unless their core focus is Industrial IoT for asset-intensive operations.""",
+#         "sources": [
+#             "https://iot-analytics.com/top-10-industrial-iot-companies/",
+#             "https://tracxn.com/explore/Industrial-IoT-Startups-in-Japan",
+#             "https://tracxn.com/explore/Industrial-IoT-Startups-in-Germany",
+#             "https://www.iothub.de/companies/",
+#             "https://pitchbook.com/profiles/industry/iot-companies-japan-germany"
+#         ]
+#     },
+#     {
+#         "title": "Supply Chain Excellence & Digital Plant Acquisition Targets",
+#         "agent-ID": "682f0ed6ced2bfaff52a8b40",
+#         "content": """I'm seeking mid-sized companies in Japan or Germany that specialize in Supply Chain Excellence and Digital Plant solutions for industrial clients. Please identify potential acquisition targets meeting these EXACT criteria:
+
+# - Revenue: Approximately $20M annual revenue (range $15M–$25M)
+# - Core focus: Supply chain optimization and digital plant solutions
+# - Target industries: Oil & Gas, Energy, Mining, Utilities
+# - Status: Privately-held companies suitable for acquisition (NOT public or subsidiaries)
+# - Growth profile: Established companies with proven solutions and market traction
+
+# Focus on companies that use specific terms such as:
+# - "Supply Chain Excellence"
+# - "Digital Plant solutions"
+# - "Digital supply chain transformation"
+# - "Integrated supply chain visibility"
+# - "Plant digitalization platforms"
+# - "Digital twin technology for industrial operations"
+
+# Each company must be presented using the following structured JSON response format:
+# ```json
+# [
+#   {
+#     "name": "<string>",
+#     "domain_name": "<string>",
+#     "estimated_revenue": "<string, e.g., $15M>",
+#     "revenue_growth": "<string, e.g., 10% CAGR over 3 years>",
+#     "employee_count": "<string, e.g., 50-75 employees>",
+#     "key_clients": ["<string>"],
+#     "leadership": [
+#       {
+#         "name": "<string>",
+#         "title": "<string>"
+#       }
+#     ],
+#     "merger_synergies": "<string>",
+#     "Industries": "<string>",
+#     "Services": "<string>",
+#     "Broad Category": "<string>",
+#     "Ownership": "<string> e.g, Private, JV, Partnership, Public",
+#     "sources": ["<string>"]
+#   }
+# ]
+# ```
+
+# Strict filtering rules:
+# - Only include real, verifiable companies with $15M–$25M in revenue
+# - Exclude public companies, large corporations, or very early-stage startups
+# - Use reliable public sources to validate each company and their capabilities
+# - All companies must serve industrial sectors in Japan or Germany
+
+# Emphasize companies with strong digital technology portfolios that enhance industrial supply chain performance and plant operations.""",
+#         "sources": [
+#             "https://www.supplychaindigital.com/top10/top-10-supply-chain-companies",
+#             "https://tracxn.com/explore/Supply-Chain-Management-Startups-in-Japan",
+#             "https://tracxn.com/explore/Supply-Chain-Management-Startups-in-Germany",
+#             "https://www.gartner.com/en/supply-chain/insights",
+#             "https://pitchbook.com/profiles/industry/supply-chain-companies"
+#         ]
+#     }
 ]
+
 
 # Pydantic models for request/response validation
 class PromptRequest(BaseModel):
@@ -604,17 +1001,17 @@ async def analyze_companies_with_claude(companies: List[Dict]) -> Optional[Dict]
     company_data_str = json.dumps(companies, indent=2)
     payload = { 
         "user_id": "pranav@lyzr.ai",
-        "agent_id": "68235606ffaabb77dd9b16fc",
-        "session_id": "68235606ffaabb77dd9b16fc-bgio2t15bjl",
+        "agent_id": "68300c29ced2bfaff52a9215",
+        "session_id": "68300c29ced2bfaff52a9215-xoemkzyvltm",
         "message": company_data_str
     }
     headers = {
         "Content-Type": "application/json",
-        "x-api-key": "sk-default-PPcvzcCe4cJRRP8JkEXnT51woYJUXzMZ"
+        "x-api-key": "sk-default-cph88XRhH9uJ9v8589zkzIochVwO8Zge"
     }
     try:
         response = await async_client.post(
-            "https://agent-dev.test.studio.lyzr.ai/v3/inference/chat/",
+            "https://agent-prod.studio.lyzr.ai/v3/inference/chat/",
             json=payload,
             headers=headers
         )
@@ -822,9 +1219,9 @@ def diagnose_json_issues(json_str: str) -> Dict:
     return diagnosis
 
 # API Endpoints
-@app.get("/prompts", summary="List Available Prompts", description="Returns the list of available search prompts.")
+@app.get("/prompts", summary="List Available Prompts", description="Returns the list of available search prompts with their indices, titles, and agent IDs.")
 async def list_prompts() -> List[Dict]:
-    return [{"index": i, "title": p["title"]} for i, p in enumerate(search_prompts)]
+    return [{"index": i, "title": p["title"], "agent-ID": p["agent-ID"]} for i, p in enumerate(search_prompts)]
 
 @app.post("/run_prompt", summary="Run a Specific Prompt", description="Runs a specific prompt by index and returns processed results. Optionally includes a custom message to refine the search.")
 async def run_prompt(request: PromptRequest) -> Dict:
