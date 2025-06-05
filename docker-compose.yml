@@ -6,9 +6,28 @@ services:
     ports:
       - "8002:8002"
     volumes:
-      - .:/app  # Mounts current directory to /app in the container
+      - .:/app
+    depends_on:
+      - accenture-db
     environment:
-      # No MongoDB-related environment variables needed
-      - PYTHONUNBUFFERED=1  # Ensures Python output is not buffered
-    stdin_open: true  # Keep the container's standard input open
-    tty: true  # Allocate a pseudo-TTY
+      - MONGO_URI=mongodb://root:example@accenture-db:27017/merger_search?authSource=admin
+      - MONGO_DB_NAME=merger_search
+      - PYTHONUNBUFFERED=1
+    stdin_open: true
+    tty: true
+
+  accenture-db: 
+    image: mongo:latest
+    container_name: accenture-db
+    restart: always
+    ports:
+      - "27020:27017"
+    volumes:
+      - mongo-data:/data/db
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: example
+
+volumes:
+  mongo-data:
+    driver: local

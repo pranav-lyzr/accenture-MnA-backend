@@ -1,8 +1,10 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, APIRouter
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel
 import requests
+import uuid
 import pandas as pd
 import json
 import time
@@ -16,6 +18,10 @@ import httpx
 import asyncio
 import ast
 from functools import wraps
+from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import ReplaceOne
+import os
+from datetime import datetime
 
 # Load environment variables from .env file
 load_dotenv()
@@ -67,6 +73,30 @@ LYZR_AGENT_HEADERS = {
     "Content-Type": "application/json",
     "x-api-key": LYZR_API_KEY
 }
+
+# MongoDB setup
+MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
+MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "merger_search")
+
+# Initialize MongoDB client
+mongo_client = AsyncIOMotorClient(MONGO_URI)
+db = mongo_client[MONGO_DB_NAME]
+
+
+# Collections
+prompt_results_collection = db["prompt_results"]
+merger_search_collection = db["merger_search"]
+companies_collection = db["companies"]
+
+
+@app.on_event("startup")
+async def startup_db_check(): 
+    try:
+        await mongo_client.admin.command('ping')
+        print("✅ Connected to MongoDB")
+    except Exception as e:
+        print("❌ MongoDB connection failed:", e)
+
 
 def sanitize_json_string(json_str: any) -> str:
     """
@@ -605,138 +635,138 @@ Output Requirements:
             "https://pitchbook.com/profiles/investor/japan-industrial-companies"
         ]
     },
-#     {
-#         "title": "German Digital Manufacturing Acquisition Targets",
-#         "agent-ID": "682f0cf3792e81c46d3d6915",
-#         "content": """Identify boutique digital manufacturing firms in Germany for acquisition potential:
+    {
+        "title": "German & EU-Based Digital Manufacturing Acquisition Targets",
+        "agent-ID": "682f0cf3792e81c46d3d6915",
+        "content": """Identify boutique digital manufacturing firms in Germany for acquisition potential:
 
-# Target Firms:
-# - Headquartered in Germany (international operations acceptable)
-# - Annual revenue: $15M–$25M (ideal: ~$20M; exclude firms outside this range)
-# - Ownership: Privately held, not subsidiaries of larger corporations
-# - Age: Established companies (in business for 5+ years); exclude early-stage startups
-# - Industry focus: Digital manufacturing solutions for Oil & Gas, Energy, Mining, Utilities
-# - Client base: Primarily enterprise industrial clients
-# - Specializations must include at least one of the following:
-#   - Digital Plant Solutions
-#   - Industrial IoT Implementations
-#   - Asset Performance Management
-#   - Predictive Maintenance Systems
-#   - Digital Twin Technology
-#   - Manufacturing Execution Systems
+Target Firms:
+- Headquartered in Germany (international operations acceptable)
+- Annual revenue: $15M–$25M (ideal: ~$20M; exclude firms outside this range)
+- Ownership: Privately held, not subsidiaries of larger corporations
+- Age: Established companies (in business for 5+ years); exclude early-stage startups
+- Industry focus: Digital manufacturing solutions for Oil & Gas, Energy, Mining, Utilities
+- Client base: Primarily enterprise industrial clients
+- Specializations must include at least one of the following:
+  - Digital Plant Solutions
+  - Industrial IoT Implementations
+  - Asset Performance Management
+  - Predictive Maintenance Systems
+  - Digital Twin Technology
+  - Manufacturing Execution Systems
 
-# Research Methodology:
-# - Identify 15–30 firms meeting all criteria [NOT LESS THAN 15, THIS IS IMPORTANT]
-# - Cross-reference data from company websites, investor databases (e.g., PitchBook, Tracxn), and industry publications
-# - Validate through public records or client testimonials; data must be confirmed by at least two credible sources listed below
-# - Exclude large corporations, publicly traded companies, early-stage startups, or firms with unverifiable revenue
+Research Methodology:
+- Identify 15–30 firms meeting all criteria [NOT LESS THAN 15, THIS IS IMPORTANT]
+- Cross-reference data from company websites, investor databases (e.g., PitchBook, Tracxn), and industry publications
+- Validate through public records or client testimonials; data must be confirmed by at least two credible sources listed below
+- Exclude large corporations, publicly traded companies, early-stage startups, or firms with unverifiable revenue
 
-# Evaluation Criteria:
-# - Financial Performance: Estimated revenue and growth trajectory
-# - Operational Scale: Year founded, employee count (if available)
-# - Client Portfolio: Enterprise clients in industrial sectors
-# - Leadership: Key executives (if available)
-# - Merger Fit: Synergies, competitiveness, and differentiation
+Evaluation Criteria:
+- Financial Performance: Estimated revenue and growth trajectory
+- Operational Scale: Year founded, employee count (if available)
+- Client Portfolio: Enterprise clients in industrial sectors
+- Leadership: Key executives (if available)
+- Merger Fit: Synergies, competitiveness, and differentiation
 
-# Output Requirements:
-# - Return a JSON array of 15–30 firms in the following structure:
-#   ```json
-#   [
-#     {
-#       "name": "<string>",
-#       "domain_name": "<string>",
-#       "estimated_revenue": "<string, e.g., $15M>",
-#       "revenue_growth": "<string, e.g., 10% CAGR over 3 years>",
-#       "employee_count": "<string, e.g., 50-75 employees>",
-#       "key_clients": ["<string>"],
-#       "leadership": [
-#         {
-#           "name": "<string>",
-#           "title": "<string>"
-#         }
-#       ],
-#       "merger_synergies": "<string>",
-#       "Industries": "<string>",
-#       "Services": "<string>",
-#       "Broad Category": "<string>",
-#       "Ownership": "<string> e.g, Private, JV, Partnership, Public",
-#       "sources": ["<string>"]
-#     }
-#   ]
-#   ```
-# - Include 2 credible sources per firm
-# - If data is unavailable or cannot be validated by at least two sources, exclude from results
-# - Return JSON only, with no narrative text or comments
-# - Ensure all firms meet the $15M–$25M revenue criterion""",
-#         "sources": [
-#             "https://tracxn.com/explore/Digital-Manufacturing-Startups-in-Germany",
-#             "https://www.vdma.org/en/",
-#             "https://www.industryweek.com/technology-and-iiot/article/companies-in-germany",
-#             "https://www.automationworld.com/factory/iiot/article/german-industrial-iot",
-#             "https://pitchbook.com/profiles/investor/german-industrial-companies"
-#         ]
-#     },
-#     {
-#         "title": "Asset Management Excellence Acquisition Targets",
-#         "agent-ID": "682f0de8ced2bfaff52a8b34",
-#         "content": """I'm seeking mid-sized companies in Japan or Germany specializing in industrial asset management that would be suitable acquisition targets. Please provide detailed information on companies meeting these EXACT criteria:
+Output Requirements:
+- Return a JSON array of 15–30 firms in the following structure:
+  ```json
+  [
+    {
+      "name": "<string>",
+      "domain_name": "<string>",
+      "estimated_revenue": "<string, e.g., $15M>",
+      "revenue_growth": "<string, e.g., 10% CAGR over 3 years>",
+      "employee_count": "<string, e.g., 50-75 employees>",
+      "key_clients": ["<string>"],
+      "leadership": [
+        {
+          "name": "<string>",
+          "title": "<string>"
+        }
+      ],
+      "merger_synergies": "<string>",
+      "Industries": "<string>",
+      "Services": "<string>",
+      "Broad Category": "<string>",
+      "Ownership": "<string> e.g, Private, JV, Partnership, Public",
+      "sources": ["<string>"]
+    }
+  ]
+  ```
+- Include 2 credible sources per firm
+- If data is unavailable or cannot be validated by at least two sources, exclude from results
+- Return JSON only, with no narrative text or comments
+- Ensure all firms meet the $15M–$25M revenue criterion""",
+        "sources": [
+            "https://tracxn.com/explore/Digital-Manufacturing-Startups-in-Germany",
+            "https://www.vdma.org/en/",
+            "https://www.industryweek.com/technology-and-iiot/article/companies-in-germany",
+            "https://www.automationworld.com/factory/iiot/article/german-industrial-iot",
+            "https://pitchbook.com/profiles/investor/german-industrial-companies"
+        ]
+    },
+    {
+        "title": "Asset Management Excellence Acquisition Targets",
+        "agent-ID": "682f0de8ced2bfaff52a8b34",
+        "content": """I'm seeking mid-sized companies in Japan or Germany specializing in industrial asset management that would be suitable acquisition targets. Please provide detailed information on companies meeting these EXACT criteria:
 
-# - Revenue: Approximately $20M annual revenue (range $15M–$25M)
-# - Core business: Asset performance management, reliability solutions for industrial clients
-# - Target sectors: Oil & Gas, Energy, Mining, Utilities
-# - Status: Privately-held companies that could be acquired (NOT subsidiaries or public firms)
-# - Growth profile: Established businesses with recent growth and operational maturity
+- Revenue: Approximately $20M annual revenue (range $15M–$25M)
+- Core business: Asset performance management, reliability solutions for industrial clients
+- Target sectors: Oil & Gas, Energy, Mining, Utilities
+- Status: Privately-held companies that could be acquired (NOT subsidiaries or public firms)
+- Growth profile: Established businesses with recent growth and operational maturity
 
-# Focus exclusively on companies using terminology such as:
-# - "Reliability/Asset Performance Management"
-# - "Asset Reliability Consulting"
-# - "Intelligent Asset Management Strategy"
-# - "EAM/Maintenance and Reliability"
-# - "Predictive Asset Analytics"
+Focus exclusively on companies using terminology such as:
+- "Reliability/Asset Performance Management"
+- "Asset Reliability Consulting"
+- "Intelligent Asset Management Strategy"
+- "EAM/Maintenance and Reliability"
+- "Predictive Asset Analytics"
 
-# Each company returned **must** include the following fields in this exact response format:
-# ```json
-# [
-#   {
-#     "name": "<string>",
-#     "domain_name": "<string>",
-#     "estimated_revenue": "<string, e.g., $15M>",
-#     "revenue_growth": "<string, e.g., 10% CAGR over 3 years>",
-#     "employee_count": "<string, e.g., 50-75 employees>",
-#     "key_clients": ["<string>"],
-#     "leadership": [
-#       {
-#         "name": "<string>",
-#         "title": "<string>"
-#       }
-#     ],
-#     "merger_synergies": "<string>",
-#     "Industries": "<string>",
-#     "Services": "<string>",
-#     "Broad Category": "<string>",
-#     "Ownership": "<string> e.g, Private, JV, Partnership, Public",
-#     "sources": ["<string>"]
-#   }
-# ]
-# ```
+Each company returned **must** include the following fields in this exact response format:
+```json
+[
+  {
+    "name": "<string>",
+    "domain_name": "<string>",
+    "estimated_revenue": "<string, e.g., $15M>",
+    "revenue_growth": "<string, e.g., 10% CAGR over 3 years>",
+    "employee_count": "<string, e.g., 50-75 employees>",
+    "key_clients": ["<string>"],
+    "leadership": [
+      {
+        "name": "<string>",
+        "title": "<string>"
+      }
+    ],
+    "merger_synergies": "<string>",
+    "Industries": "<string>",
+    "Services": "<string>",
+    "Broad Category": "<string>",
+    "Ownership": "<string> e.g, Private, JV, Partnership, Public",
+    "sources": ["<string>"]
+  }
+]
+```
 
-# Additional rules:
-# - Include only real, verifiable companies in the $15M–$25M revenue range
-# - Include a minimum of 15 and maximum of 30 companies
-# - Use at least two reliable public sources to validate each record
-# - Exclude large enterprises, public companies, and early-stage startups
-# - Do not include companies without confirmed revenue estimates or unclear ownership
+Additional rules:
+- Include only real, verifiable companies in the $15M–$25M revenue range
+- Include a minimum of 15 and maximum of 30 companies
+- Use at least two reliable public sources to validate each record
+- Exclude large enterprises, public companies, and early-stage startups
+- Do not include companies without confirmed revenue estimates or unclear ownership
 
-# Make sure all companies focus on asset management for industrial sectors (Oil & Gas, Energy, Mining, Utilities).""",
-#         "sources": [
-#             "https://www.reliabilityweb.com/directory",
-#             "https://www.plantservices.com/vendors/products/asset-management",
-#             "https://www.upkeep.com/learning/asset-management",
-#             "https://pitchbook.com/profiles/industry/asset-management-companies",
-#             "https://tracxn.com/explore/Asset-Management-Startups-in-Japan",
-#             "https://tracxn.com/explore/Asset-Management-Startups-in-Germany"
-#         ]
-#     },
+Make sure all companies focus on asset management for industrial sectors (Oil & Gas, Energy, Mining, Utilities).""",
+        "sources": [
+            "https://www.reliabilityweb.com/directory",
+            "https://www.plantservices.com/vendors/products/asset-management",
+            "https://www.upkeep.com/learning/asset-management",
+            "https://pitchbook.com/profiles/industry/asset-management-companies",
+            "https://tracxn.com/explore/Asset-Management-Startups-in-Japan",
+            "https://tracxn.com/explore/Asset-Management-Startups-in-Germany"
+        ]
+    },
 #     {
 #         "title": "Industrial IoT Acquisition Targets",
 #         "agent-ID": "682f0e62490dde168e7cdc9b",
@@ -1223,47 +1253,80 @@ def diagnose_json_issues(json_str: str) -> Dict:
 async def list_prompts() -> List[Dict]:
     return [{"index": i, "title": p["title"], "agent-ID": p["agent-ID"]} for i, p in enumerate(search_prompts)]
 
-@app.post("/run_prompt", summary="Run a Specific Prompt", description="Runs a specific prompt by index and returns processed results. Optionally includes a custom message to refine the search.")
+@app.post("/run_prompt", summary="Run a Specific Prompt", description="Runs a specific prompt by index and returns processed results.")
 async def run_prompt(request: PromptRequest) -> Dict:
     try:
         prompt_data = search_prompts[request.prompt_index]
     except IndexError:
         raise HTTPException(status_code=400, detail="Invalid prompt index")
     
-    # Construct prompt_content based on whether a custom message is provided
-    if request.custom_message:
-        # Include the custom message as a specific user request
-        prompt_content = f"Return at least 15-20 firms + User Request: {request.custom_message} [IMPORTANT]"
-    else:
-        # Use default instruction
-        prompt_content = f"Return at least 15-20 firms"
+    if request.custom_message and not request.custom_message.strip():
+        raise HTTPException(status_code=400, detail="Custom message cannot be empty if provided")
     
-    print("prompt_content", prompt_content)
+    prompt_content = (
+        f"Return at least 15-20 firms + User Request: {request.custom_message} [IMPORTANT]"
+        if request.custom_message else
+        "Return at least 15-20 firms"
+    )
+    logger.info(f"Processing prompt with custom message: {request.custom_message}")
+
     response = await query_perplexity(prompt_content, prompt_data['agent-ID'])
     if not response:
         raise HTTPException(status_code=500, detail="API request failed")
 
     processed = await process_api_response(response, prompt_data)
-    
-    # Save or update results in merger_search_results.json
-    result_file = Path("merger_search_results.json")
-    existing_results = {}
-    if result_file.exists():
-        with open(result_file, 'r') as f:
-            existing_results = json.load(f)
-    
-    # Update results for this prompt
-    existing_results[prompt_data['title']] = {
+
+    # Validate number of companies
+    companies = processed.get("companies", [])
+    if len(companies) < 15:
+        processed["validation_warnings"].append(
+            f"Response returned {len(companies)} companies, expected at least 15"
+        )
+
+    # Save results to `prompt_results_collection`
+    document = {
+        "prompt_index": request.prompt_index,
+        "title": prompt_data['title'],
+        "custom_message": request.custom_message,
+        "prompt_content": prompt_content,
         "raw_response": processed.get("response", []),
-        "extracted_companies": processed.get("companies", []),
+        "extracted_companies": companies,
         "validation_warnings": processed.get("validation_warnings", []),
-        "custom_message": request.custom_message  # Save the custom message for reference
+        "timestamp": datetime.utcnow()
     }
-    
-    # Save updated results
-    await save_to_json(existing_results)
-    
+    result = await prompt_results_collection.insert_one(document)
+    processed["document_id"] = str(result.inserted_id)
+
+    # Upsert companies into `companies_collection`
+    for company in processed.get("response", []):
+        if "name" in company:
+            await companies_collection.update_one(
+                {"name": company["name"]},
+                {"$set": company},
+                upsert=True
+            )
+
     return processed
+
+@app.get("/prompt_history", summary="Get Prompt History", description="Retrieves all saved prompt results")
+async def get_prompt_history() -> List[Dict]:
+    cursor = prompt_results_collection.find().sort("timestamp", -1)
+    results = []
+    async for document in cursor:
+        document.pop("_id", None)
+        results.append(document)
+    return results
+
+
+@app.get("/companies", summary="Get All Companies", description="Retrieves all unique company records from the companies collection")
+async def get_all_companies() -> List[Dict]:
+    cursor = companies_collection.find({})
+    companies = []
+    async for doc in cursor:
+        doc["_id"] = str(doc["_id"])  # Convert ObjectId to string
+        companies.append(doc)
+    return jsonable_encoder(companies)
+
 
 @app.post("/extract_companies", summary="Extract Companies from Response", description="Extracts company names from a given JSON response content.")
 async def extract_companies_endpoint(content: str) -> CompaniesResponse:
@@ -1285,41 +1348,72 @@ async def analyze_companies(request: AnalysisRequest) -> Dict:
         raise HTTPException(status_code=500, detail="Lyzr agent API request failed or returned empty analysis")
     return {"analysis": analysis}
 
-@app.post("/run_merger_search", summary="Run Full Merger Search", description="Executes the full merger search process, including running all prompts, extracting companies, saving results, and analyzing with Claude via Lyzr agent API, returning all responses as JSON objects.")
+@app.post("/run_merger_search", summary="Run Full Merger Search", description="Executes all prompts, extracts companies, analyzes with Claude, and stores results in MongoDB.")
 async def run_merger_search_endpoint() -> MergerSearchResponse:
     batch_tasks = [process_prompt_batch(p) for p in search_prompts]
     batch_results = await asyncio.gather(*batch_tasks)
 
     results = {}
-    all_companies = []
+    all_company_docs = []
     raw_responses = {}
 
     for result in batch_results:
         if "error" in result:
-            logger.error(f"Failed batch item: {result['title']}")
+            logger.error(f"Failed batch item: {result.get('title', 'Unknown')}")
             continue
+
         key = result["title"]
         results[key] = {
             "raw_response": result["response"],
             "extracted_companies": result["companies"],
             "validation_warnings": result["validation_warnings"]
         }
-        all_companies.extend(result["companies"])
+
         raw_responses[key] = json.dumps(result["response"], indent=2)
 
-    all_companies = sorted(list(set(all_companies)))
-    io_tasks = [
-        save_to_csv(all_companies),
-        save_to_json(results)
-    ]
-    await asyncio.gather(*io_tasks)
+        for company in result["response"]:
+            if "name" in company and company["name"]:
+                # Add timestamp to each company entry
+                company_doc = company.copy()
+                company_doc["timestamp"] = datetime.utcnow()
+                all_company_docs.append(company_doc)
 
-    analysis_task = analyze_with_claude(all_companies, raw_responses)
+    # Save results to merger_search_collection
+    merger_document = {
+        "results": results,
+        "all_companies": list({c['name'] for c in all_company_docs}),
+        "claude_analysis": {},
+        "timestamp": datetime.utcnow()
+    }
+    await merger_search_collection.insert_one(merger_document)
+
+    # Upsert each company into companies_collection (replace if exists by name)
+    if all_company_docs:
+        bulk_ops = []
+        for company in all_company_docs:
+            bulk_ops.append(
+                ReplaceOne(
+                    {"name": company["name"]},  # Filter
+                    company,  # New doc
+                    upsert=True  # Replace or insert
+                )
+            )
+        if bulk_ops:
+            await companies_collection.bulk_write(bulk_ops)
+
+    # Analyze companies using Claude
+    analysis_task = analyze_with_claude(list({c['name'] for c in all_company_docs}), raw_responses)
     claude_analysis = await analysis_task
+
+    # Update merger document with analysis result
+    await merger_search_collection.update_one(
+        {"_id": merger_document["_id"]},
+        {"$set": {"claude_analysis": claude_analysis}}
+    )
 
     return MergerSearchResponse(
         results={**results, "claude_analysis": claude_analysis},
-        message="Merger search completed with parallel processing"
+        message="Merger search completed and saved to MongoDB"
     )
 
 @app.post("/redo_search", summary="Redo Merger Search", description="Re-runs the full merger search process, overwriting existing results.")
@@ -1335,14 +1429,19 @@ async def redo_search_endpoint() -> MergerSearchResponse:
     # Run the full merger search
     return await run_merger_search_endpoint()
 
-@app.get("/fetch_existing_items", summary="Fetch Existing Items", description="Retrieves the existing merger search results from the JSON file, if available.")
+@app.get("/fetch_existing_items")
 async def fetch_existing_items() -> Dict:
-    result_file = Path("merger_search_results.json")
-    if not result_file.exists():
+    # Get latest merger search result
+    latest_search = await merger_search_collection.find_one(
+        sort=[("timestamp", -1)]
+    )
+    
+    if not latest_search:
         return {"results": {}, "message": "No existing results found"}
-    with open(result_file, 'r') as f:
-        results = json.load(f)
-    return {"results": results, "message": "Successfully retrieved existing results"}
+    
+    # Remove MongoDB ID before returning
+    latest_search.pop("_id", None)
+    return {"results": latest_search, "message": "Successfully retrieved existing results"}
 
 async def save_to_csv(companies: List[str]):
     loop = asyncio.get_event_loop()
@@ -1358,14 +1457,20 @@ async def save_to_json(data: Dict):
         lambda: json.dump(data, open('merger_search_results.json', 'w'), indent=2)
     )
 
-@app.get("/results", summary="Get Saved Results", description="Retrieves the saved merger search results from the JSON file.")
+@app.get("/results", summary="Get Saved Results", description="Retrieves the latest merger search results from MongoDB.")
 async def get_results() -> Dict:
-    result_file = Path("merger_search_results.json")
-    if not result_file.exists():
-        raise HTTPException(status_code=404, detail="Results file not found")
-    with open(result_file, 'r') as f:
-        results = json.load(f)
-    return results
+    latest_result = await merger_search_collection.find_one(
+        {}, 
+        sort=[("timestamp", -1)]
+    )
+
+    if not latest_result:
+        raise HTTPException(status_code=404, detail="No merger search results found")
+
+    # Optionally remove the MongoDB ObjectId if not needed in response
+    latest_result.pop("_id", None)
+
+    return latest_result
 
 @app.get("/download_csv", summary="Download Companies CSV", description="Downloads the CSV file containing the list of identified companies.")
 async def download_csv() -> FileResponse:
