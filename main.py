@@ -1177,7 +1177,7 @@ async def process_api_response(response: Dict, prompt_data: Dict) -> Dict:
     companies = [company["name"] for company in validated_companies]
     return {
         "title": prompt_data["title"],
-        "response": validated_companies,
+        "raw_response": validated_companies,
         "companies": companies,
         "sources": prompt_data["sources"],
         "validation_warnings": validation_warnings
@@ -1289,7 +1289,7 @@ async def run_prompt(request: PromptRequest) -> Dict:
         "title": prompt_data['title'],
         "custom_message": request.custom_message,
         "prompt_content": prompt_content,
-        "raw_response": processed.get("response", []),
+        "raw_response": processed.get("raw_response", []),
         "extracted_companies": companies,
         "validation_warnings": processed.get("validation_warnings", []),
         "timestamp": datetime.utcnow()
