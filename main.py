@@ -87,7 +87,7 @@ db = mongo_client[MONGO_DB_NAME]
 prompt_results_collection = db["prompt_results"]
 merger_search_collection = db["merger_search"]
 companies_collection = db["companies"]
-
+search_criteria_results_collection = db["search_criteria_results"]
 
 @app.on_event("startup")
 async def startup_db_check(): 
@@ -933,6 +933,9 @@ class CompanyData(BaseModel):
 class AnalysisRequest(BaseModel):
     companies: List[CompanyData]
 
+class SearchCriteriaRequest(BaseModel):
+    search_criteria: Dict
+
 # Apollo API enrichment function
 @async_retry(max_attempts=3, delay=2.0)
 async def enrich_company(company_domain: str) -> Dict:
@@ -1247,6 +1250,53 @@ def diagnose_json_issues(json_str: str) -> Dict:
         )
     
     return diagnosis
+
+async def process_search_criteria(search_criteria: Dict) -> Dict:
+    try:
+        # Prepare payload for Lyzr agent API
+        payload = {
+            "user_id": LYZR_USER_ID,
+            "agent_id": "6846895162d8a0cca76182cb",
+            "session_id": "6846895162d8a0cca76182cb-v7rpxmm2kz9",
+            "message": json.dumps({**search_criteria, "instruction": "Please return at least 15 companies that match the search criteria"})
+        }
+
+        # Make API call
+        response = await async_client.post(
+            LYZR_AGENT_URL,
+            json=payload,
+            headers=LYZR_AGENT_HEADERS
+        )
+        response.raise_for_status()
+        json_response = response.json()
+        raw_response = json_response.get("response", "{}")
+
+        # Sanitize and parse response
+        sanitized_response = sanitize_json_string(raw_response)
+        try:
+            parsed_response = json.loads(sanitized_response)
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse Lyzr response: {e}")
+            return {"error": "Invalid response format", "validation_warnings": [str(e)]}
+
+        # Save search criteria and response to MongoDB
+        document = {
+            "search_criteria": search_criteria,
+            "response": parsed_response,
+            "timestamp": datetime.utcnow()
+        }
+        result = await db["search_criteria_results"].insert_one(document)
+
+        return {
+            "response": parsed_response,
+            "document_id": str(result.inserted_id),
+            "message": "Search completed and saved to database",
+            "validation_warnings": []
+        }
+
+    except Exception as e:
+        logger.error(f"Error processing search criteria: {e}")
+        return {"error": str(e), "validation_warnings": [str(e)]}
 
 # API Endpoints
 @app.get("/prompts", summary="List Available Prompts", description="Returns the list of available search prompts with their indices, titles, and agent IDs.")
@@ -1636,6 +1686,26 @@ Output Requirements:
         "message": f"Successfully retrieved Perplexity data for {request.company_name}" if company_data else f"No valid data for {request.company_name}",
         "validation_warnings": validation_warnings
     }
+
+@app.post("/process_search_criteria", summary="Process Search Criteria", description="Processes the provided search criteria by calling the Lyzr agent API, returns the response, and saves both criteria and response to MongoDB.")
+async def process_search_criteria_endpoint(request: SearchCriteriaRequest) -> Dict:
+    if not request.search_criteria:
+        raise HTTPException(status_code=400, detail="Search criteria cannot be empty")
+    
+    result = await process_search_criteria(request.search_criteria)
+    if "error" in result:
+        raise HTTPException(status_code=500, detail=result["error"])
+    
+    return result
+
+@app.get("/search_criteria_history", summary="Get Search Criteria History", description="Retrieves all saved search criteria and their corresponding responses from MongoDB.")
+async def get_search_criteria_history() -> List[Dict]:
+    cursor = db["search_criteria_results"].find().sort("timestamp", -1)
+    results = []
+    async for document in cursor:
+        document["_id"] = str(document["_id"])  # Convert ObjectId to string
+        results.append(document)
+    return jsonable_encoder(results)
 
 @app.get('/health', summary="Health Check", description="Checks the health status of the API.")
 async def health_check():
